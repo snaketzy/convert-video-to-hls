@@ -177,7 +177,8 @@ export function DirReviewCard({ item, index }: DirReviewCardProps) {
                 )}
               </div>
               <p className="text-muted-foreground text-xs">
-                主视频的 HLS 阶梯按 skill 默认档位（240P / 360P / 480P / 720P / 1080P）硬编，分片
+                主视频一次解码后并发输出双阶梯：HEVC 2160P / 1080P / 720P / 480P / 360P，H.264
+                1080P / 720P / 480P / 360P，分别落到 HEVC/ 与 H264/ 两个目录，分片
                 {config ? ` ${config.segmentDuration}s` : ''}。
               </p>
             </div>

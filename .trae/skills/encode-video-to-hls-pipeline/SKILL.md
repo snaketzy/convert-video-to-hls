@@ -5,20 +5,25 @@ description: Encode local video into multi-bitrate multi-audio multi-subtitle HL
 
 # 本地视频 -> 多码率 / 多音轨 / 多字幕 HLS
 
-把「一个主视频 + 若干外挂音轨 + 若干 WebVTT 字幕」压成一套标准 HLS：
+把「一个主视频 + 若干外挂音轨 + 若干 WebVTT 字幕」压成一套标准 HLS。
+
+主视频**一次解码**后并发输出**两条阶梯**：HEVC 覆盖 2160P→360P、H.264 覆盖 1080P→360P，分别打包进各自的输出目录：
 
 ```text
 <out>/
 ├── mezz/                     # 中间件，打包后可删
-│   ├── v_240.mp4 ... v_1080.mp4
+│   ├── v_hevc_2160.mp4 ... v_hevc_360.mp4
+│   ├── v_h264_1080.mp4 ... v_h264_360.mp4
 │   ├── a_English_5_1.mp4 ...
 │   └── sub/English.vtt ...
-└── hls/
-    ├── master.m3u8           # 多码率 + EXT-X-MEDIA 音轨/字幕组
-    ├── 240/init.mp4 + 1..N.m4s + playlist.m3u8   (360/ 480/ 720/ 1080/ 同)
-    ├── a_English_5_1/...
-    ├── s_English/...
-    └── player.html           # 校验用播放器（需同目录 hls.min.js）
+├── HEVC/
+│   ├── master.m3u8           # 多码率 + EXT-X-MEDIA 音轨/字幕组
+│   ├── 2160/init.mp4 + 1..N.m4s + playlist.m3u8   (1080/ 720/ 480/ 360/ 同)
+│   ├── a_English_5_1/...
+│   ├── s_English/...
+│   └── player.html           # 校验用播放器（需同目录 hls.min.js）
+└── H264/                     # 结构与 HEVC/ 相同，视频档为 1080/720/480/360
+    └── master.m3u8 ...
 ```
 
 主流程用 `scripts/encode_hls.sh`；字幕裁剪用 `scripts/trim_vtt.py`。
@@ -43,13 +48,28 @@ cp /tmp/ff/ffmpeg /tmp/ff/ffprobe /usr/local/bin/ && chmod +x /usr/local/bin/ffm
 
 ## 默认阶梯
 
+两条阶梯各自输出目录：`HEVC/`（hvc1）与 `H264/`（avc1）；音轨/字幕两条共用同一批 mezz。
+
+**HEVC 阶梯**（`--ladder-hevc`，覆盖 2160P→360P）
+
 | 档位 | 分辨率 | 码率 | maxrate | bufsize |
 |---|---|---|---|---|
-| 240P | 426×240 | 300k | 350k | 700k |
-| 360P | 640×360 | 700k | 800k | 1500k |
-| 480P | 854×480 | 1200k | 1300k | 2400k |
-| 720P | 1280×720 | 2800k | 3000k | 5600k |
+| 2160P | 3840×2160 | 12000k | 13000k | 24000k |
+| 1080P | 1920×1080 | 4000k | 4200k | 8000k |
+| 720P | 1280×720 | 2200k | 2400k | 4400k |
+| 480P | 854×480 | 900k | 1000k | 1800k |
+| 360P | 640×360 | 500k | 600k | 1000k |
+
+**H.264 阶梯**（`--ladder-h264`，覆盖 1080P→360P）
+
+| 档位 | 分辨率 | 码率 | maxrate | bufsize |
+|---|---|---|---|---|
 | 1080P | 1920×1080 | 5000k | 5350k | 10000k |
+| 720P | 1280×720 | 2800k | 3000k | 5600k |
+| 480P | 854×480 | 1200k | 1300k | 2400k |
+| 360P | 640×360 | 700k | 800k | 1500k |
+
+只产出一条时，把另一条置空即可：`--ladder-hevc ""`（只出 H.264）或 `--ladder-h264 ""`（只出 HEVC）。
 
 ## 用法
 
@@ -68,7 +88,8 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 - `--audio` 的源写 `main` 表示取主视频第 0 条音频；否则给外挂音频文件。
 - `--subs-prefix` 会匹配 `<前缀>.<标签>.vtt`，标签末尾的 `.default` 去掉后即默认字幕。
 - 只要前 10 分钟做预演：加 `--duration 600`。全片留空。
-- 想调整档位：`--ladder "240:426x240:300k:350k:700k,720:1280x720:2800k:3000k:5600k"`。
+- 想调整档位：`--ladder-hevc "2160:3840x2160:12000k:13000k:24000k,1080:1920x1080:4000k:4200k:8000k"`、`--ladder-h264 "1080:1920x1080:5000k:5350k:10000k"`。
+- 两条阶梯只按 `--ladder-hevc` / `--ladder-h264` 分别产出 `HEVC/master.m3u8` 与 `H264/master.m3u8`。
 
 ## 必须遵守的规则
 
@@ -92,16 +113,16 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 ## 校验
 
 ```bash
-cd ./output/movie/hls
+cd ./output/movie/HEVC          # H264/ 同理
 # 各档段数应完全一致
-for d in 240 360 480 720 1080; do echo "$d $(ls $d/*.m4s | wc -l)"; done
+for d in 2160 1080 720 480 360; do echo "$d $(ls $d/*.m4s | wc -l)"; done
 # 时长
-awk -F: '/#EXTINF/{s+=$2} END{printf "%.2fs\n", s}' 1080/playlist.m3u8
+awk -F: '/#EXTINF/{s+=$2} END{printf "%.2fs\n", s}' 2160/playlist.m3u8
 # 关键帧对齐（各档输出应完全相同）
-for d in 240 360 480 720 1080; do
+for d in 2160 1080 720 480 360; do
   printf "%-7s " "$d"
   ffprobe -v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time \
-    -of csv=p=0 -read_intervals "%+18" "../mezz/v_$d.mp4" | head -3 | tr '\n' ' '
+    -of csv=p=0 -read_intervals "%+18" "../mezz/v_hevc_$d.mp4" | head -3 | tr '\n' ' '
   echo
 done
 # 默认轨
@@ -112,11 +133,12 @@ grep -E "DEFAULT=YES" master.m3u8
 
 ## 下一步：发布到 R2 拿在线 m3u8
 
-拿到 `hls/` 目录后，用 `upload-HLS-to-R2-pipeline` skill 上传并获取在线地址：
+拿到 `HEVC/` 与 `H264/` 两个目录后，分别用 `upload-HLS-to-R2-pipeline` skill 上传并获取在线地址：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
-../upload-HLS-to-R2-pipeline/scripts/upload_hls_to_r2.sh --hls ./output/movie/hls
+../upload-HLS-to-R2-pipeline/scripts/upload_hls_to_r2.sh --hls ./output/movie/HEVC
+../upload-HLS-to-R2-pipeline/scripts/upload_hls_to_r2.sh --hls ./output/movie/H264
 ```
 
 该 skill 负责两趟上传（含 `.vtt` 的 `Content-Type` 修正）、本地/远端字节数核对、线上状态码与 CORS 验证，并直接打印 `master.m3u8` 与 `player.html` 的在线地址。详见 `../upload-HLS-to-R2-pipeline/SKILL.md`。

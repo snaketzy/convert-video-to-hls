@@ -84,6 +84,16 @@ export type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancel
 
 export type BatchStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+export interface TaskPlaylist {
+  /** 编码档位：hevc / h264 */
+  codec: string;
+  /** master.m3u8 绝对路径 */
+  path: string;
+  /** master.m3u8 所在目录 */
+  dir: string;
+  sizeBytes: number | null;
+}
+
 export interface BatchTask {
   id: string;
   name: string;
@@ -106,8 +116,7 @@ export interface BatchTask {
   message: string | null;
   error: string | null;
   logTail: string[];
-  hlsDir: string | null;
-  masterPath: string | null;
+  playlists: TaskPlaylist[];
   sizeBytes: number | null;
   startedAt: string | null;
   finishedAt: string | null;

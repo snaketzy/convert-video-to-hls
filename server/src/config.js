@@ -38,15 +38,6 @@ export const FOLDER_PICKER_ENABLED = process.env.DISABLE_FOLDER_PICKER !== '1';
 /** 分片时长（秒），与脚本默认值保持一致 */
 export const SEGMENT_DURATION = Number(process.env.SEGMENT_DURATION || 6);
 
-/**
- * 视频阶梯档位名，用于把进度分摊到各档
- * 必须与 encode_hls.sh 的 --ladder 默认值一致
- */
-export const LADDER_NAMES = (process.env.LADDER_NAMES || '240,360,480,720,1080')
-  .split(',')
-  .map((item) => item.trim())
-  .filter(Boolean);
-
 /** 单任务进度快照里保留的日志行数 */
 export const LOG_TAIL_LINES = 60;
 

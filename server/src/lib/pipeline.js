@@ -154,7 +154,7 @@ async function runTask(batch, task) {
 
     let stdoutBuffer = '';
     let stderr = '';
-    let masterPath = null;
+    const masterPaths = [];
 
     const handleLine = (raw) => {
       const line = raw.replace(/\r$/, '');
@@ -197,8 +197,11 @@ async function runTask(batch, task) {
 
       pushLog(task, line.trim());
 
-      const masterMatch = line.match(/master 播放列表:\s*(.+)$/);
-      if (masterMatch) masterPath = masterMatch[1].trim();
+      // 双阶梯：脚本结尾会打印「  hevc: <path>」「  h264: <path>」两行
+      const masterMatch = line.match(/^\s*(hevc|h264):\s*(.+master\.m3u8)\s*$/i);
+      if (masterMatch) {
+        masterPaths.push({ codec: masterMatch[1].toLowerCase(), path: masterMatch[2].trim() });
+      }
     };
 
     child.stdout.on('data', (chunk) => {
@@ -221,7 +224,7 @@ async function runTask(batch, task) {
       task.child = null;
 
       if (code === 0) {
-        resolve({ masterPath: masterPath || path.join(workDir, 'hls', 'master.m3u8'), stderr });
+        resolve({ playlists: masterPaths, stderr });
         return;
       }
       const detail = stderr.trim().split('\n').slice(-4).join(' ').trim();
@@ -229,39 +232,60 @@ async function runTask(batch, task) {
     });
   }).then(async (result) => {
     task.encoded = true;
+
+    // 双阶梯：脚本会输出 hevc / h264 两条播放列表，逐条校验
+    const playlists = result.playlists;
+    if (playlists.length === 0) {
+      throw new Error('编码结束但未从输出中解析到 master.m3u8 路径');
+    }
+
     if (!staged) {
-      const master = result.masterPath;
-      try {
-        await fs.access(master);
-      } catch {
-        throw new Error(`编码结束但未找到 master.m3u8：${master}`);
+      for (const entry of playlists) {
+        try {
+          await fs.access(entry.path);
+        } catch {
+          throw new Error(`编码结束但未找到 master.m3u8：${entry.path}`);
+        }
       }
-      task.masterPath = master;
-      task.sizeBytes = await directorySize(path.dirname(master));
+      task.playlists = await attachPlaylistSizes(playlists);
+      task.sizeBytes = task.playlists.reduce((sum, entry) => sum + entry.sizeBytes, 0);
       task.percent = 100;
       task.itemLabel = null;
       return;
     }
 
-    // 暂存模式：编码已落到工作区，这里把 hls/ 搬到目标目录
-    const stagedHls = path.join(workDir, 'hls');
+    // 暂存模式：编码已落到工作区，这里把 HEVC/ 与 H264/ 分别搬到目标目录
     pushLog(task, `正在把编码结果搬运到目标目录：${task.outDir}`);
-    let targetHls;
-    try {
-      targetHls = await moveHlsWithFinder(stagedHls, task.outDir);
-    } catch (error) {
-      throw new Error(`编码完成，但搬运到目标目录失败：${error.message}（产物保留在 ${workDir}）`);
+    const moved = [];
+    for (const entry of playlists) {
+      const stagedDir = path.dirname(entry.path);
+      let targetDir;
+      try {
+        targetDir = await moveHlsWithFinder(stagedDir, task.outDir);
+      } catch (error) {
+        throw new Error(`编码完成，但搬运到目标目录失败：${error.message}（产物保留在 ${workDir}）`);
+      }
+      const master = path.join(targetDir, 'master.m3u8');
+      // Finder 已回报搬运成功；这一步只做确认，读不到（例如沙箱限制读）不视为失败
+      if (!(await fs.access(master).then(() => true).catch(() => false))) {
+        pushLog(task, `提示：已搬运到 ${targetDir}，但未能读取 ${master} 做校验`);
+      }
+      moved.push({ codec: entry.codec, path: master });
     }
-    const master = path.join(targetHls, 'master.m3u8');
-    // Finder 已回报搬运成功；这一步只做确认，读不到（例如沙箱限制读）不视为失败
-    if (!(await fs.access(master).then(() => true).catch(() => false))) {
-      pushLog(task, `提示：已搬运到 ${targetHls}，但未能读取 ${master} 做校验`);
-    }
-    task.masterPath = master;
-    task.sizeBytes = await directorySize(targetHls);
+    task.playlists = await attachPlaylistSizes(moved);
+    task.sizeBytes = task.playlists.reduce((sum, entry) => sum + entry.sizeBytes, 0);
     task.percent = 100;
     task.itemLabel = null;
   });
+}
+
+/** 为每条播放列表附上所在目录的体积 */
+async function attachPlaylistSizes(playlists) {
+  const result = [];
+  for (const entry of playlists) {
+    result.push({ ...entry, sizeBytes: await directorySize(path.dirname(entry.path)) });
+  }
+  return result;
 }
 
 async function directorySize(dir) {
@@ -301,7 +325,9 @@ export async function runBatch(batch) {
       await runTask(batch, task);
       task.status = 'completed';
       task.message = null;
-      pushLog(task, `完成：${task.masterPath}`);
+      for (const entry of task.playlists ?? []) {
+        pushLog(task, `完成（${entry.codec}）：${entry.path}`);
+      }
       // 暂存目录里的产物已搬到目标目录，可以清掉
       if (task.workDir && task.workDir !== task.outDir) {
         await removeStagingDir(task.workDir);

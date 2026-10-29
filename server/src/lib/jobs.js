@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { BATCH_TTL_MS, LOG_TAIL_LINES, LADDER_NAMES, SEGMENT_DURATION } from '../config.js';
+import { BATCH_TTL_MS, LOG_TAIL_LINES, SEGMENT_DURATION } from '../config.js';
 
 /** batchId -> 批次记录 */
 const batches = new Map();
@@ -56,11 +56,10 @@ export function createBatch({ outputRoot, tasks, strategy = { mode: 'direct', no
       message: null,
       error: null,
       logTail: [],
-      masterPath: null,
+      playlists: [],
       sizeBytes: null,
       startedAt: null,
       finishedAt: null,
-      ladderNames: LADDER_NAMES,
       segmentDuration: SEGMENT_DURATION,
     })),
   };
@@ -102,8 +101,12 @@ function serializeTask(task) {
     message: task.message,
     error: task.error,
     logTail: task.logTail.slice(-12),
-    hlsDir: task.masterPath ? path.dirname(task.masterPath) : null,
-    masterPath: task.masterPath,
+    playlists: (task.playlists ?? []).map((entry) => ({
+      codec: entry.codec,
+      path: entry.path,
+      dir: path.dirname(entry.path),
+      sizeBytes: entry.sizeBytes ?? null,
+    })),
     sizeBytes: task.sizeBytes,
     startedAt: task.startedAt ? new Date(task.startedAt).toISOString() : null,
     finishedAt: task.finishedAt ? new Date(task.finishedAt).toISOString() : null,

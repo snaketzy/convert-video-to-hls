@@ -21,7 +21,12 @@ PACKAGER="${PACKAGER:-packager}"
 
 INPUT=""
 OUT=""
-LADDER="240:426x240:300k:350k:700k,360:640x360:700k:800k:1500k,480:854x480:1200k:1300k:2400k,720:1280x720:2800k:3000k:5600k,1080:1920x1080:5000k:5350k:10000k"
+# 两条独立阶梯，一次解码后并发输出：HEVC 覆盖 2160->360，H.264 覆盖 1080->360
+# 把某条置空（--ladder-hevc ""）即可只产出另一条
+LADDER_HEVC="2160:3840x2160:12000k:13000k:24000k,1080:1920x1080:4000k:4200k:8000k,720:1280x720:2200k:2400k:4400k,480:854x480:900k:1000k:1800k,360:640x360:500k:600k:1000k"
+LADDER_H264="1080:1920x1080:5000k:5350k:10000k,720:1280x720:2800k:3000k:5600k,480:854x480:1200k:1300k:2400k,360:640x360:700k:800k:1500k"
+HLS_HEVC=""
+HLS_H264=""
 AUDIO=""
 SUBS_PREFIX=""
 SUBS_LIST=""
@@ -43,8 +48,11 @@ usage() {
   --out DIR              输出根目录，内部会建 mezz/ 与 hls/
 
 选项:
-  --ladder SPEC          视频阶梯，逗号分隔，每项 name:WxH:码率:maxrate:bufsize
-                         默认 240/360/480/720/1080 五档
+  --ladder-hevc SPEC     HEVC 阶梯，逗号分隔，每项 name:WxH:码率:maxrate:bufsize
+                         默认 2160/1080/720/480/360 五档；置空则跳过 HEVC 这条
+  --ladder-h264 SPEC     H.264 阶梯，格式同上
+                         默认 1080/720/480/360 四档；置空则跳过 H.264 这条
+                         两条阶梯一次解码并发输出，各自写入 <out>/HEVC 与 <out>/H264
   --audio SPEC           音轨，逗号分隔，每项 name:lang:声道数:码率:源
                          源写 main 表示取主视频第 0 条音频，否则给外挂音频文件路径
                          默认 English:en:2:192k:main
@@ -70,7 +78,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --input) INPUT="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
-    --ladder) LADDER="$2"; shift 2;;
+    --ladder-hevc) LADDER_HEVC="$2"; shift 2;;
+    --ladder-h264) LADDER_H264="$2"; shift 2;;
     --audio) AUDIO="$2"; shift 2;;
     --subs-prefix) SUBS_PREFIX="$2"; shift 2;;
     --subs-list) SUBS_LIST="$2"; shift 2;;
@@ -102,10 +111,19 @@ for bin in "$FFMPEG" "$FFPROBE" "$PACKAGER"; do
 done
 
 MEZZ="$OUT/mezz"
-HLS="$OUT/hls"
-mkdir -p "$MEZZ/sub" "$HLS"
+mkdir -p "$MEZZ/sub"
 MEZZ="$(cd "$MEZZ" && pwd)"
-HLS="$(cd "$HLS" && pwd)"
+
+# 两条阶梯各自一个输出目录，只创建实际会用到的（置空的那条不建目录）
+if [ -n "$LADDER_HEVC" ]; then
+  mkdir -p "$OUT/HEVC"
+  HLS_HEVC="$(cd "$OUT/HEVC" && pwd)"
+fi
+if [ -n "$LADDER_H264" ]; then
+  mkdir -p "$OUT/H264"
+  HLS_H264="$(cd "$OUT/H264" && pwd)"
+fi
+[ -n "$HLS_HEVC$HLS_H264" ] || die "两条阶梯都为空，没有可编码的档位"
 
 # ---------- 探测源 ----------
 FPS_RAW="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$INPUT" | head -1)"
@@ -137,42 +155,65 @@ echo "处理时长   : ${DUR}s"
 echo "色彩       : ${COLOR_TRC:-unknown}  (HDR->SDR: $([ -n "$HDR2SDR" ] && echo 开 || echo 关))"
 echo "解码       : $([ "$HWACCEL" = "1" ] && echo videotoolbox 硬解 || echo 软解)"
 echo "mezz       : $MEZZ"
-echo "hls        : $HLS"
+if [ -n "$HLS_HEVC" ]; then echo "HEVC 输出  : $HLS_HEVC"; fi
+if [ -n "$HLS_H264" ]; then echo "H264 输出  : $HLS_H264"; fi
 echo
 
 # ---------- 1. 视频档 ----------
 # 一次解码源，filter_complex 把解码帧 split 给 N 条 scale(+tonemap) 链，再并发输出 N 档。
 # 若每档各起一个 ffmpeg，4K HEVC 源会被完整解码 N 遍，而解码占单档耗时约 87%：
 # 60s 素材实测 5 档串行 41.3s -> 单进程并发 16.6s（约 2.5x），产物帧数/时长/关键帧完全一致。
-echo "=== 1/4 视频编码 (硬编 $FFMPEG h264_videotoolbox) ==="
-IFS=',' read -r -a LADDER_ITEMS <<<"$LADDER"
-LADDER_N="${#LADDER_ITEMS[@]}"
+echo "=== 1/4 视频编码 (硬编 videotoolbox) ==="
+HEVC_ITEMS=()
+H264_ITEMS=()
+if [ -n "$LADDER_HEVC" ]; then IFS=',' read -r -a HEVC_ITEMS <<<"$LADDER_HEVC"; fi
+if [ -n "$LADDER_H264" ]; then IFS=',' read -r -a H264_ITEMS <<<"$LADDER_H264"; fi
+HEVC_N="${#HEVC_ITEMS[@]}"
+H264_N="${#H264_ITEMS[@]}"
+LADDER_N=$((HEVC_N + H264_N))
 # 进度按「视频阶段=1 项」上报，故只在这里打一条条目行；各档明细用日志前缀，不参与计数
-echo "  - 视频 ${LADDER_N} 档并发输出"
+echo "  - 视频 ${LADDER_N} 档并发输出（HEVC ${HEVC_N} 档 + H.264 ${H264_N} 档）"
 
-FC=""
+FC="[0:v]split=$LADDER_N"
+s=0
+while [ "$s" -lt "$LADDER_N" ]; do FC="$FC[v$s]"; s=$((s + 1)); done
+FC="$FC;"
+
 VOUT_ARGS=()
 VI=0
-for item in "${LADDER_ITEMS[@]}"; do
-  IFS=':' read -r vname vsize vbr vmax vbuf <<<"$item"
-  [ -n "${vname:-}" ] && [ -n "${vsize:-}" ] || die "阶梯格式错误: $item"
-  echo "  · $vname ($vsize, $vbr)"
-  VI=$((VI + 1))
-  # SDR 源只缩放；HDR 源在缩放后补一段 BT.2020 PQ -> BT.709 的色调映射
-  VF="scale=$vsize:flags=bicubic"
-  [ -n "$HDR2SDR" ] && VF="$VF,$HDR2SDR"
-  if [ "$VI" = "1" ]; then
-    FC="[0:v]split=$LADDER_N"
-    s=0
-    while [ "$s" -lt "$LADDER_N" ]; do FC="$FC[v$s]"; s=$((s + 1)); done
-    FC="$FC;"
-  fi
-  FC="$FC[v$((VI - 1))]$VF[o$VI];"
-  VOUT_ARGS+=(-map "[o$VI]" -c:v h264_videotoolbox -profile:v high -pix_fmt yuv420p \
-    -b:v "$vbr" -maxrate "$vmax" -bufsize "$vbuf" -g "$GOP" \
-    -force_key_frames "expr:gte(t,n_forced*$SEG)" -movflags +faststart \
-    "$MEZZ/v_$vname.mp4")
-done
+# HEVC 阶梯
+if [ "$HEVC_N" -gt 0 ]; then
+  for item in "${HEVC_ITEMS[@]}"; do
+    IFS=':' read -r vname vsize vbr vmax vbuf <<<"$item"
+    [ -n "${vname:-}" ] && [ -n "${vsize:-}" ] || die "阶梯格式错误: $item"
+    echo "  · HEVC $vname ($vsize, $vbr)"
+    # SDR 源只缩放；HDR 源在缩放后补一段 BT.2020 PQ -> BT.709 的色调映射
+    VF="scale=$vsize:flags=bicubic"
+    if [ -n "$HDR2SDR" ]; then VF="$VF,$HDR2SDR"; fi
+    FC="$FC[v$VI]$VF[o$VI];"
+    VOUT_ARGS+=(-map "[o$VI]" -c:v hevc_videotoolbox -tag:v hvc1 -pix_fmt yuv420p \
+      -b:v "$vbr" -maxrate "$vmax" -bufsize "$vbuf" -g "$GOP" \
+      -force_key_frames "expr:gte(t,n_forced*$SEG)" -movflags +faststart \
+      "$MEZZ/v_hevc_$vname.mp4")
+    VI=$((VI + 1))
+  done
+fi
+# H.264 阶梯
+if [ "$H264_N" -gt 0 ]; then
+  for item in "${H264_ITEMS[@]}"; do
+    IFS=':' read -r vname vsize vbr vmax vbuf <<<"$item"
+    [ -n "${vname:-}" ] && [ -n "${vsize:-}" ] || die "阶梯格式错误: $item"
+    echo "  · H.264 $vname ($vsize, $vbr)"
+    VF="scale=$vsize:flags=bicubic"
+    if [ -n "$HDR2SDR" ]; then VF="$VF,$HDR2SDR"; fi
+    FC="$FC[v$VI]$VF[o$VI];"
+    VOUT_ARGS+=(-map "[o$VI]" -c:v h264_videotoolbox -profile:v high -pix_fmt yuv420p \
+      -b:v "$vbr" -maxrate "$vmax" -bufsize "$vbuf" -g "$GOP" \
+      -force_key_frames "expr:gte(t,n_forced*$SEG)" -movflags +faststart \
+      "$MEZZ/v_h264_$vname.mp4")
+    VI=$((VI + 1))
+  done
+fi
 FC="${FC%;}"
 
 "$FFMPEG" -y -hide_banner -loglevel error -nostats $PARG $HWARG -t "$DUR" -i "$INPUT" -an \
@@ -301,75 +342,99 @@ lang_of() {
 
 # ---------- 4. 打包 ----------
 echo "=== 4/4 shaka-packager 组 HLS ==="
-cd "$HLS"
-rm -rf master.m3u8 v_* a_* s_*
 
-DESC=()
-for item in "${LADDER_ITEMS[@]}"; do
-  IFS=':' read -r vname _ _ _ _ <<<"$item"
-  DESC+=("in=../mezz/v_$vname.mp4,stream=video,init_segment=$vname/init.mp4,segment_template=$vname/\$Number\$.m4s,playlist_name=$vname/playlist.m3u8")
-done
+# 同一批音轨/字幕 mezz 复用到两条阶梯，各自打包进自己的输出目录
+pack_into() {  # $1=codec(hevc|h264)  $2=输出目录  其余=视频档位规格
+  local codec="$1" dir="$2"
+  shift 2
+  local items=("$@")
+  local DESC item vname aname alang slug desc label lang entry
+  mkdir -p "$dir"
+  cd "$dir"
+  rm -rf master.m3u8 v_* a_* s_*
 
-for item in "${AUDIO_ITEMS[@]}"; do
-  IFS=':' read -r aname alang _ _ _ <<<"$item"
-  slug="$(printf '%s' "$aname" | tr -c 'A-Za-z0-9_-' '_')"
-  desc="in=../mezz/a_$slug.mp4,stream=audio,init_segment=a_$slug/init.mp4,segment_template=a_$slug/\$Number\$.m4s,playlist_name=a_$slug/playlist.m3u8,hls_group_id=audio,hls_name=$aname"
-  # packager 会直接拒绝 lang=und；语言未知时不带 lang=（该轨也就无法成为默认轨）
-  if [ -n "$alang" ] && [ "$alang" != "und" ]; then desc="$desc,lang=$alang"; fi
-  DESC+=("$desc")
-done
+  DESC=()
+  for item in "${items[@]}"; do
+    IFS=':' read -r vname _ _ _ _ <<<"$item"
+    DESC+=("in=../mezz/v_${codec}_$vname.mp4,stream=video,init_segment=$vname/init.mp4,segment_template=$vname/\$Number\$.m4s,playlist_name=$vname/playlist.m3u8")
+  done
 
-if [ "$SUBS_N" -gt 0 ]; then
-  for entry in "${SUBS[@]}"; do
-    slug="${entry%%|*}"; label="${entry##*|}"
-    lang="$(lang_of "$label")"
-    desc="in=../mezz/sub/$slug.vtt,stream=text,segment_template=s_$slug/\$Number\$.vtt,playlist_name=s_$slug/playlist.m3u8,hls_group_id=subs,hls_name=$label"
-    [ -n "$lang" ] && desc="$desc,lang=$lang"
+  for item in "${AUDIO_ITEMS[@]}"; do
+    IFS=':' read -r aname alang _ _ _ <<<"$item"
+    slug="$(printf '%s' "$aname" | tr -c 'A-Za-z0-9_-' '_')"
+    desc="in=../mezz/a_$slug.mp4,stream=audio,init_segment=a_$slug/init.mp4,segment_template=a_$slug/\$Number\$.m4s,playlist_name=a_$slug/playlist.m3u8,hls_group_id=audio,hls_name=$aname"
+    # packager 会直接拒绝 lang=und；语言未知时不带 lang=（该轨也就无法成为默认轨）
+    if [ -n "$alang" ] && [ "$alang" != "und" ]; then desc="$desc,lang=$alang"; fi
     DESC+=("$desc")
   done
-fi
 
-echo "  输入流数量: ${#DESC[@]}"
-"$PACKAGER" "${DESC[@]}" \
-  --segment_duration "$SEG" \
-  --default_language "$DEFAULT_AUDIO_LANG" \
-  --default_text_language "$DEFAULT_TEXT_LANG" \
-  --hls_master_playlist_output master.m3u8
+  if [ "$SUBS_N" -gt 0 ]; then
+    for entry in "${SUBS[@]}"; do
+      slug="${entry%%|*}"; label="${entry##*|}"
+      lang="$(lang_of "$label")"
+      desc="in=../mezz/sub/$slug.vtt,stream=text,segment_template=s_$slug/\$Number\$.vtt,playlist_name=s_$slug/playlist.m3u8,hls_group_id=subs,hls_name=$label"
+      if [ -n "$lang" ]; then desc="$desc,lang=$lang"; fi
+      DESC+=("$desc")
+    done
+  fi
+
+  echo "  [$codec] 输入流数量: ${#DESC[@]}"
+  "$PACKAGER" "${DESC[@]}" \
+    --segment_duration "$SEG" \
+    --default_language "$DEFAULT_AUDIO_LANG" \
+    --default_text_language "$DEFAULT_TEXT_LANG" \
+    --hls_master_playlist_output master.m3u8
+}
+
+if [ "$HEVC_N" -gt 0 ]; then pack_into hevc "$HLS_HEVC" "${HEVC_ITEMS[@]}"; fi
+if [ "$H264_N" -gt 0 ]; then pack_into h264 "$HLS_H264" "${H264_ITEMS[@]}"; fi
 
 # ---------- 附带播放器 ----------
 if [ "$COPY_PLAYER" = "1" ] && [ -f "$SKILL_DIR/assets/player.html" ]; then
-  cp "$SKILL_DIR/assets/player.html" "$HLS/player.html"
-  if [ ! -f "$HLS/hls.min.js" ]; then
+  for dir in "$HLS_HEVC" "$HLS_H264"; do
+    [ -n "$dir" ] || continue
+    cp "$SKILL_DIR/assets/player.html" "$dir/player.html"
+  done
+  hint="${HLS_HEVC:-$HLS_H264}"
+  if [ ! -f "$hint/hls.min.js" ]; then
     echo
     echo "提示: 播放器需要同目录的 hls.min.js，执行下面命令补齐："
-    echo "  curl -fsSL -o \"$HLS/hls.min.js\" https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
+    echo "  curl -fsSL -o \"$hint/hls.min.js\" https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
   fi
 fi
 
 # ---------- 校验 ----------
-echo
-echo "=== 分段核对 ==="
-for item in "${LADDER_ITEMS[@]}"; do
-  IFS=':' read -r vname _ _ _ _ <<<"$item"
-  printf "  v_%-6s %s 段\n" "$vname" "$(ls "$vname"/*.m4s 2>/dev/null | wc -l | tr -d ' ')"
-done
-for item in "${AUDIO_ITEMS[@]}"; do
-  IFS=':' read -r aname _ _ _ _ <<<"$item"
-  slug="$(printf '%s' "$aname" | tr -c 'A-Za-z0-9_-' '_')"
-  printf "  a_%-6s %s 段\n" "$slug" "$(ls "a_$slug"/*.m4s 2>/dev/null | wc -l | tr -d ' ')"
-done
-[ "$SUBS_N" -gt 0 ] && echo "  字幕轨 $SUBS_N 条"
-
-echo
-echo "=== 关键帧对齐（各档前 3 个）==="
-for item in "${LADDER_ITEMS[@]}"; do
-  IFS=':' read -r vname _ _ _ _ <<<"$item"
-  printf "  v_%-6s " "$vname"
-  "$FFPROBE" -v error -select_streams v:0 -skip_frame nokey \
-    -show_entries frame=pts_time -of csv=p=0 -read_intervals "%+$((SEG * 3))" \
-    "$MEZZ/v_$vname.mp4" 2>/dev/null | head -3 | tr '\n' ' '
+verify_ladder() {  # $1=codec  $2=hls目录  其余=视频档位规格
+  local codec="$1" dir="$2"
+  shift 2
+  local items=("$@") item vname slug
   echo
-done
+  echo "=== [$codec] 分段核对 ==="
+  for item in "${items[@]}"; do
+    IFS=':' read -r vname _ _ _ _ <<<"$item"
+    printf "  v_%-6s %s 段\n" "$vname" "$(ls "$dir/$vname"/*.m4s 2>/dev/null | wc -l | tr -d ' ')"
+  done
+  for item in "${AUDIO_ITEMS[@]}"; do
+    IFS=':' read -r vname _ _ _ _ <<<"$item"
+    slug="$(printf '%s' "$vname" | tr -c 'A-Za-z0-9_-' '_')"
+    printf "  a_%-6s %s 段\n" "$slug" "$(ls "$dir/a_$slug"/*.m4s 2>/dev/null | wc -l | tr -d ' ')"
+  done
+  if [ "$SUBS_N" -gt 0 ]; then echo "  字幕轨 $SUBS_N 条"; fi
+
+  echo
+  echo "=== [$codec] 关键帧对齐（各档前 3 个）==="
+  for item in "${items[@]}"; do
+    IFS=':' read -r vname _ _ _ _ <<<"$item"
+    printf "  v_%-6s " "$vname"
+    "$FFPROBE" -v error -select_streams v:0 -skip_frame nokey \
+      -show_entries frame=pts_time -of csv=p=0 -read_intervals "%+$((SEG * 3))" \
+      "$MEZZ/v_${codec}_$vname.mp4" 2>/dev/null | head -3 | tr '\n' ' '
+    echo
+  done
+}
+
+if [ "$HEVC_N" -gt 0 ]; then verify_ladder hevc "$HLS_HEVC" "${HEVC_ITEMS[@]}"; fi
+if [ "$H264_N" -gt 0 ]; then verify_ladder h264 "$HLS_H264" "${H264_ITEMS[@]}"; fi
 
 if [ "$KEEP_MEZZ" = "0" ]; then
   rm -rf "$MEZZ"
@@ -378,4 +443,6 @@ if [ "$KEEP_MEZZ" = "0" ]; then
 fi
 
 echo
-echo "完成。master 播放列表: $HLS/master.m3u8"
+echo "完成。master 播放列表:"
+if [ -n "$HLS_HEVC" ]; then echo "  hevc: $HLS_HEVC/master.m3u8"; fi
+if [ -n "$HLS_H264" ]; then echo "  h264: $HLS_H264/master.m3u8"; fi

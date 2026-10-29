@@ -52,13 +52,13 @@ function overallPercent(batch: Batch): number {
 }
 
 function TaskRow({ task }: { task: BatchTask }) {
-  const [copied, setCopied] = useState(false);
+  const [copiedCodec, setCopiedCodec] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!copied) return undefined;
-    const timer = window.setTimeout(() => setCopied(false), 1500);
+    if (!copiedCodec) return undefined;
+    const timer = window.setTimeout(() => setCopiedCodec(null), 1500);
     return () => window.clearTimeout(timer);
-  }, [copied]);
+  }, [copiedCodec]);
 
   const active = task.status === 'running';
 
@@ -100,26 +100,29 @@ function TaskRow({ task }: { task: BatchTask }) {
 
       {task.error && <p className="text-destructive text-xs break-all">失败原因：{task.error}</p>}
 
-      {task.masterPath && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-muted-foreground text-xs">master.m3u8：</span>
-          <span className="font-mono text-xs break-all">{task.masterPath}</span>
+      {task.playlists.map((entry) => (
+        <div key={entry.codec} className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{entry.codec.toUpperCase()}</Badge>
+          {entry.sizeBytes !== null && (
+            <span className="text-muted-foreground text-xs">{formatBytes(entry.sizeBytes)}</span>
+          )}
+          <span className="font-mono text-xs break-all">{entry.path}</span>
           <Button
             variant="ghost"
             size="sm"
             className="text-muted-foreground"
             onClick={() => {
               void navigator.clipboard
-                .writeText(task.masterPath ?? '')
-                .then(() => setCopied(true))
+                .writeText(entry.path)
+                .then(() => setCopiedCodec(entry.codec))
                 .catch(() => undefined);
             }}
           >
-            {copied ? <Check className="text-emerald-600" /> : <Copy />}
-            {copied ? '已复制' : '复制路径'}
+            {copiedCodec === entry.codec ? <Check className="text-emerald-600" /> : <Copy />}
+            {copiedCodec === entry.codec ? '已复制' : '复制路径'}
           </Button>
         </div>
-      )}
+      ))}
 
       {(active || task.status === 'failed') && task.logTail.length > 0 && (
         <details className="text-xs">
