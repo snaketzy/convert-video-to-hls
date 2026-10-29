@@ -1,0 +1,25 @@
+{
+  "name": "convert-video-to-hls",
+  "version": "1.0.0",
+  "private": true,
+  "description": "把本地视频目录（mp4 + mp3 + WebVTT）批量编码为多码率 / 多音轨 / 多字幕 HLS 的 Web 系统",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c magenta,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:web": "npm --workspace web run dev",
+    "build": "npm --workspace web run build",
+    "start": "npm --workspace server run start",
+    "serve": "npm run build && npm run start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
