@@ -280,11 +280,13 @@ else
 fi
 
 # 字幕/音轨显示名 -> BCP-47 语言码
-# 匹配规则：转小写后精确匹配（大小写不敏感）
-# 必须与 server/src/lib/languages.js 的 LANGUAGE_LABELS 保持一致
+# 匹配规则：显示名 trim 后精确匹配（大小写不敏感）
+# 显示名查不到时，若该串本身就是形似 BCP-47 的语言码（如 en、zh-Hans、fr-CA）则原样使用；und 视为未知
+# 必须与 server/src/lib/languages.js 的 LANGUAGE_LABELS / langOfName 保持一致
 lang_of() {
-  local key
-  key="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  local raw key
+  raw="$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  key="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
   case "$key" in
     arabic) echo "ar";;
     bulgarian) echo "bg";;
@@ -336,7 +338,22 @@ lang_of() {
     turkish) echo "tr";;
     ukrainian) echo "uk";;
     vietnamese) echo "vi";;
-    *) echo "";;
+    # 语言码别名：可直接用编码侧的语言码作为轨道名
+    "zh-cn") echo "zh-Hans";;
+    "zh-tw") echo "zh-Hant";;
+    "zh-hk") echo "zh-Hant-HK";;
+    "zh-hans") echo "zh-Hans";;
+    "zh-hant") echo "zh-Hant";;
+    "zh-hant-hk") echo "zh-Hant-HK";;
+    "zh_cn") echo "zh-Hans";;
+    "zh_tw") echo "zh-Hant";;
+    "zh_hk") echo "zh-Hant-HK";;
+    *)
+      # 显示名查不到：本身形似 BCP-47 的语言码则原样输出；und 视为未知
+      if [ "$key" != "und" ] && printf '%s' "$raw" | grep -Eq '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'; then
+        printf '%s' "$raw"
+      fi
+      ;;
   esac
 }
 
@@ -394,13 +411,11 @@ if [ "$COPY_PLAYER" = "1" ] && [ -f "$SKILL_DIR/assets/player.html" ]; then
   for dir in "$HLS_HEVC" "$HLS_H264"; do
     [ -n "$dir" ] || continue
     cp "$SKILL_DIR/assets/player.html" "$dir/player.html"
+    # 播放器靠同目录的 hls.js 走 MSE 播放（Chrome/Firefox 无原生 HLS），必须一起带上
+    if [ -f "$SKILL_DIR/assets/hls.min.js" ]; then
+      cp "$SKILL_DIR/assets/hls.min.js" "$dir/hls.min.js"
+    fi
   done
-  hint="${HLS_HEVC:-$HLS_H264}"
-  if [ ! -f "$hint/hls.min.js" ]; then
-    echo
-    echo "提示: 播放器需要同目录的 hls.min.js，执行下面命令补齐："
-    echo "  curl -fsSL -o \"$hint/hls.min.js\" https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"
-  fi
 fi
 
 # ---------- 校验 ----------

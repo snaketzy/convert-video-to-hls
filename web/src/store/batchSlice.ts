@@ -1,7 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 import { api } from '@/lib/api';
-import type { AppConfig, Batch, HealthPayload, ScanItem, SubmitTask } from '@/lib/types';
+import type { AppConfig, Batch, CodecSelection, HealthPayload, ScanItem, SubmitTask } from '@/lib/types';
 import type { RootState } from '@/store';
 
 export interface BatchSliceState {
@@ -21,6 +21,9 @@ export interface BatchSliceState {
   outputRoot: string;
   pickerStatus: 'idle' | 'opening' | 'unsupported' | 'error';
   pickerError: string | null;
+
+  /** 本次批次要产出的编码阶梯 */
+  codecs: CodecSelection;
 
   batch: Batch | null;
   startStatus: 'idle' | 'starting' | 'error';
@@ -44,6 +47,8 @@ const initialState: BatchSliceState = {
   outputRoot: '',
   pickerStatus: 'idle',
   pickerError: null,
+
+  codecs: { hevc: true, h264: true },
 
   batch: null,
   startStatus: 'idle',
@@ -169,9 +174,12 @@ export const startBatch = createAsyncThunk<Batch, void, { state: RootState; reje
 
     const tasks = buildSubmitTasks(state);
     if (tasks.length === 0) return rejectWithValue('没有可编码的目录（缺少主视频）');
+    if (!state.codecs.hevc && !state.codecs.h264) {
+      return rejectWithValue('请至少选择一种编码类型（HEVC / H.264）');
+    }
 
     try {
-      return await api.createBatch(outputRoot, tasks);
+      return await api.createBatch(outputRoot, tasks, state.codecs);
     } catch (error) {
       return rejectWithValue(error instanceof Error ? error.message : '创建批次失败');
     }
@@ -237,6 +245,9 @@ const batchSlice = createSlice({
       if (state.pickerStatus === 'error' || state.pickerStatus === 'unsupported') {
         state.pickerStatus = 'idle';
       }
+    },
+    codecToggled(state, action: PayloadAction<{ codec: keyof CodecSelection; enabled: boolean }>) {
+      state.codecs[action.payload.codec] = action.payload.enabled;
     },
     audioLabelChanged(
       state,
@@ -425,6 +436,7 @@ export const {
   allItemsCleared,
   outputRootChanged,
   pickerErrorCleared,
+  codecToggled,
   audioLabelChanged,
   audioLangChanged,
   audioChannelsChanged,

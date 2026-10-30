@@ -27,7 +27,12 @@ export function assignOutputDirs(outputRoot, dirs) {
 /**
  * 创建批次记录（此时任务尚未开始执行）
  */
-export function createBatch({ outputRoot, tasks, strategy = { mode: 'direct', notice: null } }) {
+export function createBatch({
+  outputRoot,
+  tasks,
+  strategy = { mode: 'direct', notice: null },
+  codecs = { hevc: true, h264: true },
+}) {
   const id = randomUUID();
   const notice = strategy.mode === 'staged' ? strategy.notice : null;
   const batch = {
@@ -35,6 +40,7 @@ export function createBatch({ outputRoot, tasks, strategy = { mode: 'direct', no
     outputRoot,
     strategy,
     notice,
+    codecs,
     status: 'queued',
     error: null,
     createdAt: Date.now(),

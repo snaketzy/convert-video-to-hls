@@ -139,6 +139,12 @@ export interface Batch {
   tasks: BatchTask[];
 }
 
+/** 本次批次要产出的编码阶梯 */
+export interface CodecSelection {
+  hevc: boolean;
+  h264: boolean;
+}
+
 /** 提交给后端的单个任务 */
 export interface SubmitTask {
   dir: string;

@@ -4,9 +4,12 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import {
+  codecToggled,
   outputRootChanged,
   pickerErrorCleared,
   pickOutputRoot,
@@ -26,15 +29,17 @@ function joinOutPath(root: string, name: string): string {
 
 export function OutputCard() {
   const dispatch = useAppDispatch();
-  const { items, outputRoot, pickerStatus, pickerError, startStatus, startError, batch, config } =
+  const { items, outputRoot, pickerStatus, pickerError, startStatus, startError, batch, config, codecs } =
     useAppSelector((state) => state.batch);
 
   const pickerSupported = config?.folderPickerSupported !== false && pickerStatus !== 'unsupported';
   const encodable = items.filter((item) => item.exists && item.video);
   const batchActive = batch?.status === 'running' || batch?.status === 'queued';
   const starting = startStatus === 'starting';
+  const hasCodec = codecs.hevc || codecs.h264;
 
-  const canStart = encodable.length > 0 && outputRoot.trim().length > 0 && !batchActive && !starting;
+  const canStart =
+    encodable.length > 0 && outputRoot.trim().length > 0 && !batchActive && !starting && hasCodec;
 
   return (
     <Card>
@@ -116,11 +121,31 @@ export function OutputCard() {
             {starting ? <Loader2 className="animate-spin" /> : <Play />}
             {starting ? '正在提交…' : batchActive ? '编码进行中…' : '开始编码'}
           </Button>
+
+          <div className="border-input flex items-center gap-4 rounded-lg border px-3 py-2">
+            <span className="text-muted-foreground text-xs">编码类型</span>
+            {(['hevc', 'h264'] as const).map((codec) => (
+              <Label key={codec} className="cursor-pointer gap-2 font-normal">
+                <Checkbox
+                  checked={codecs[codec]}
+                  disabled={batchActive || starting}
+                  onCheckedChange={(checked) =>
+                    dispatch(codecToggled({ codec, enabled: checked === true }))
+                  }
+                />
+                {codec === 'hevc' ? 'HEVC' : 'H264'}
+              </Label>
+            ))}
+          </div>
+
           {encodable.length === 0 && (
             <span className="text-muted-foreground text-xs">请先选择包含主视频的源目录</span>
           )}
           {encodable.length > 0 && !outputRoot.trim() && (
             <span className="text-muted-foreground text-xs">请先选择输出根目录</span>
+          )}
+          {encodable.length > 0 && !hasCodec && (
+            <span className="text-muted-foreground text-xs">请至少勾选一种编码类型</span>
           )}
           {batchActive && (
             <span className="text-muted-foreground text-xs">当前批次结束后才能提交新批次</span>

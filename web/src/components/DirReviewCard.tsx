@@ -47,6 +47,9 @@ const AUDIO_LANG_OPTIONS = [
   'vi',
 ];
 
+/** 形似 BCP-47 语言码：2~3 位主语言 + 若干位子标签（与服务端 langOfName 的回退规则一致） */
+const BCP47_PATTERN = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i;
+
 const CHANNEL_OPTIONS = [
   { value: 2, label: '2 声道（立体声）' },
   { value: 6, label: '6 声道（5.1）' },
@@ -68,10 +71,13 @@ export function DirReviewCard({ item, index }: DirReviewCardProps) {
   const config = useAppSelector((state) => state.batch.config);
   const [switching, setSwitching] = useState(false);
 
-  // 与服务端 langOfName 一致：转小写后精确匹配
+  // 与服务端 langOfName 一致：先按显示名精确匹配，查不到时形似语言码则原样使用
   const subtitleLangOf = (label: string) => {
     const key = label.trim().toLowerCase();
-    return config?.subtitleLabels.find((entry) => entry.label.toLowerCase() === key)?.lang ?? '';
+    const mapped = config?.subtitleLabels.find((entry) => entry.label.toLowerCase() === key)?.lang;
+    if (mapped) return mapped;
+    const text = label.trim();
+    return key !== 'und' && BCP47_PATTERN.test(text) ? text : '';
   };
 
   const handleVideoChange = async (videoPath: string) => {

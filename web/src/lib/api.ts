@@ -1,4 +1,11 @@
-import type { AppConfig, Batch, HealthPayload, ScanItem, SubmitTask } from '@/lib/types';
+import type {
+  AppConfig,
+  Batch,
+  CodecSelection,
+  HealthPayload,
+  ScanItem,
+  SubmitTask,
+} from '@/lib/types';
 
 const API_BASE = '/api';
 
@@ -55,8 +62,8 @@ export const api = {
   scan: (dirs: string[], mainVideos?: Record<string, string>) =>
     post<{ items: ScanItem[] }>('/scan', { dirs, mainVideos }),
 
-  createBatch: (outputRoot: string, tasks: SubmitTask[]) =>
-    post<Batch>('/batches', { outputRoot, tasks }),
+  createBatch: (outputRoot: string, tasks: SubmitTask[], codecs: CodecSelection) =>
+    post<Batch>('/batches', { outputRoot, tasks, codecs }),
 
   getBatch: (batchId: string) => request<Batch>(`/batches/${batchId}`),
 

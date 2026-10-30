@@ -120,6 +120,13 @@ apiRouter.post('/batches', async (req, res, next) => {
       throw fail(400, `一次最多编码 ${MAX_DIRS} 个目录，当前 ${rawTasks.length} 个`);
     }
 
+    // 未传时默认两条阶梯都产出（保持旧行为）
+    const rawCodecs = req.body?.codecs ?? {};
+    const codecs = { hevc: rawCodecs.hevc !== false, h264: rawCodecs.h264 !== false };
+    if (!codecs.hevc && !codecs.h264) {
+      throw fail(400, '请至少选择一种编码类型（HEVC / H.264）');
+    }
+
     const prepared = [];
     for (const [index, raw] of rawTasks.entries()) {
       const prefix = `第 ${index + 1} 个目录`;
@@ -201,7 +208,7 @@ apiRouter.post('/batches', async (req, res, next) => {
       task.outDir = outDirs[index];
     });
 
-    const batch = createBatch({ outputRoot, tasks: prepared, strategy });
+    const batch = createBatch({ outputRoot, tasks: prepared, strategy, codecs });
     runBatch(batch).catch((error) => {
       batch.status = 'failed';
       batch.error = error.message;

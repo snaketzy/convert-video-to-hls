@@ -21,7 +21,8 @@ description: Encode local video into multi-bitrate multi-audio multi-subtitle HL
 │   ├── 2160/init.mp4 + 1..N.m4s + playlist.m3u8   (1080/ 720/ 480/ 360/ 同)
 │   ├── a_English_5_1/...
 │   ├── s_English/...
-│   └── player.html           # 校验用播放器（需同目录 hls.min.js）
+│   ├── player.html           # 校验用播放器
+│   └── hls.min.js            # 内置 hls.js（Chrome/Firefox 播 HLS 必需，随播放器一起复制）
 └── H264/                     # 结构与 HEVC/ 相同，视频档为 1080/720/480/360
     └── master.m3u8 ...
 ```

@@ -121,6 +121,10 @@ async function runTask(batch, task) {
     '--segment-duration', String(task.segmentDuration || SEGMENT_DURATION),
   ];
 
+  // 只产出勾选的阶梯：把另一条置空，脚本会跳过它
+  if (batch.codecs?.hevc === false) args.push('--ladder-hevc', '');
+  if (batch.codecs?.h264 === false) args.push('--ladder-h264', '');
+
   // packager 的 --default_language 只认「语言码匹配上的第一条流」，语言未知（und）时
   // 传了也匹配不到，反而会把该轨写成 lang=und 让 packager 直接报错
   const defaultAudioLang = usableLang(task.audios[0]?.lang);
