@@ -185,7 +185,8 @@ export function DirReviewCard({ item, index }: DirReviewCardProps) {
               <p className="text-muted-foreground text-xs">
                 主视频一次解码后并发输出双阶梯：HEVC 2160P / 1080P / 720P / 480P / 360P，H.264
                 1080P / 720P / 480P / 360P，分别落到 HEVC/ 与 H264/ 两个目录，分片
-                {config ? ` ${config.segmentDuration}s` : ''}。
+                {config ? ` ${config.segmentDuration}s` : ''}。档位会按源画面等比缩放后补黑边填满，
+                高于源分辨率的档（放大无意义）自动跳过。
               </p>
             </div>
 

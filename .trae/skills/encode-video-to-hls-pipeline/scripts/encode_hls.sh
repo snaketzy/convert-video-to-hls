@@ -23,6 +23,8 @@ INPUT=""
 OUT=""
 # 两条独立阶梯，一次解码后并发输出：HEVC 覆盖 2160->360，H.264 覆盖 1080->360
 # 把某条置空（--ladder-hevc ""）即可只产出另一条
+# 规格里的 WxH 是「档位框」上限：实际按源宽高比等比缩到框内再补黑边，
+# 档位框高于源分辨率的档会整档跳过（绝不放大）
 LADDER_HEVC="2160:3840x2160:12000k:13000k:24000k,1080:1920x1080:4000k:4200k:8000k,720:1280x720:2200k:2400k:4400k,480:854x480:900k:1000k:1800k,360:640x360:500k:600k:1000k"
 LADDER_H264="1080:1920x1080:5000k:5350k:10000k,720:1280x720:2800k:3000k:5600k,480:854x480:1200k:1300k:2400k,360:640x360:700k:800k:1500k"
 HLS_HEVC=""
@@ -53,6 +55,8 @@ usage() {
   --ladder-h264 SPEC     H.264 阶梯，格式同上
                          默认 1080/720/480/360 四档；置空则跳过 H.264 这条
                          两条阶梯一次解码并发输出，各自写入 <out>/HEVC 与 <out>/H264
+                         WxH 是档位框上限：按源宽高比等比缩到框内后补黑边（方形像素），
+                         档位框高于源分辨率的档会自动跳过
   --audio SPEC           音轨，逗号分隔，每项 name:lang:声道数:码率:源
                          源写 main 表示取主视频第 0 条音频，否则给外挂音频文件路径
                          默认 English:en:2:192k:main
@@ -130,9 +134,39 @@ FPS_RAW="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=r_frame_
 FPS="$(awk -F/ '{printf "%.6f", ($2 ? $1/$2 : $1)}' <<<"${FPS_RAW:-0}")"
 SRC_DUR="$("$FFPROBE" -v error -show_entries format=duration -of csv=p=0 "$INPUT" | head -1)"
 COLOR_TRC="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 "$INPUT" | head -1)"
+# 源画面几何：像素宽高 SRC_W x SRC_H，以及像素宽高比 SAR（形如 4:3 / 32:27）
+SRC_W="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$INPUT" | head -1)"
+SRC_H="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT" | head -1)"
+SRC_SAR="$("$FFPROBE" -v error -select_streams v:0 -show_entries stream=sample_aspect_ratio -of csv=p=0 "$INPUT" | head -1)"
 
 if [ "$DURATION" = "0" ]; then DUR="$SRC_DUR"; else DUR="$DURATION"; fi
 [ -n "$GOP" ] || GOP="$(awk -v f="$FPS" -v s="$SEG" 'BEGIN{printf "%d", f*s+0.5}')"
+
+# 方形像素等效显示尺寸：SAR 只作用于宽（dw = 宽 × SAR，dh = 高）。
+# SAR 缺失 / 0:1 / N/A 一律当方形像素，避免把正常源算变形。
+read -r SRC_DW SRC_DH <<<"$(awk -v w="${SRC_W:-0}" -v h="${SRC_H:-0}" -v sar="${SRC_SAR:-}" 'BEGIN{
+  n = 1; d = 1;
+  if (sar ~ /^[0-9]+:[0-9]+$/) { split(sar, p, ":"); if (p[1] + 0 > 0 && p[2] + 0 > 0) { n = p[1]; d = p[2]; } }
+  printf "%.4f %.4f", w * n / d, h
+}')"
+[ "${SRC_DW%%.*}" -gt 0 ] 2>/dev/null && [ "${SRC_DH%%.*}" -gt 0 ] 2>/dev/null \
+  || die "无法从源读取画面尺寸，无法按源分辨率裁剪档位"
+
+# 把档位框等比缩小到源宽高比之内，输出「内容宽 内容高 是否需要放大(1=是)」
+# 需要放大 = 源填不满档位框（如 1080p 源遇到 2160 档），调用方据此整档跳过。
+# 容忍 ≤5% 的轻微放大：源常见 1918x1080 / 1912x1072 这类近似分辨率，不该因此掉档。
+fit_to_box() {
+  local bw="${1%x*}" bh="${1#*x}"
+  case "$bw$bh" in ''|*[!0-9]*) die "阶梯格式错误，档位框应为 WxH: $1";; esac
+  awk -v dw="$SRC_DW" -v dh="$SRC_DH" -v bw="$bw" -v bh="$bh" 'BEGIN{
+    f1 = bw / dw; f2 = bh / dh; f = (f1 < f2 ? f1 : f2);
+    cw = int(dw * f / 2 + 0.5) * 2; ch = int(dh * f / 2 + 0.5) * 2;
+    if (cw > bw) cw = bw - (bw % 2); if (ch > bh) ch = bh - (bh % 2);
+    if (cw < 2) cw = 2; if (ch < 2) ch = 2;
+    # 结尾换行不能省：read 在无换行时会返回非 0，set -e 下会静默中止脚本
+    printf "%d %d %d\n", cw, ch, (f > 1.05 ? 1 : 0)
+  }'
+}
 
 # HDR(PQ/HLG) 源 -> SDR(BT.709) 的色调映射链
 # 先 scale 再 tonemap：zscale/tonemap 的像素量按目标档位计，4K 源上直接做会非常慢
@@ -151,6 +185,7 @@ if [ "$HWACCEL" = "1" ]; then HWARG="-hwaccel videotoolbox"; fi
 
 echo "源         : $INPUT"
 echo "帧率       : $FPS  (GOP=$GOP, 分片=${SEG}s)"
+echo "源画面     : ${SRC_W}x${SRC_H}  SAR=${SRC_SAR:-1:1}  (方形像素等效 ${SRC_DW%%.*}x${SRC_DH%%.*})"
 echo "处理时长   : ${DUR}s"
 echo "色彩       : ${COLOR_TRC:-unknown}  (HDR->SDR: $([ -n "$HDR2SDR" ] && echo 开 || echo 关))"
 echo "解码       : $([ "$HWACCEL" = "1" ] && echo videotoolbox 硬解 || echo 软解)"
@@ -163,7 +198,43 @@ echo
 # 一次解码源，filter_complex 把解码帧 split 给 N 条 scale(+tonemap) 链，再并发输出 N 档。
 # 若每档各起一个 ffmpeg，4K HEVC 源会被完整解码 N 遍，而解码占单档耗时约 87%：
 # 60s 素材实测 5 档串行 41.3s -> 单进程并发 16.6s（约 2.5x），产物帧数/时长/关键帧完全一致。
+#
+# 每档先把画面按源宽高比等比缩到档位框内，再补黑边填满档位框（方形像素）：
+# 1920x800 / 1440x1080 / 2.39:1 这类非 16:9 源既不会变形，也不会被裁切。
 echo "=== 1/4 视频编码 (硬编 videotoolbox) ==="
+
+# 按源分辨率裁剪两条阶梯：整档高于源分辨率的直接剔除（绝不放大）
+# stdout 只回传筛选结果（被命令替换捕获），跳过说明一律走 stderr
+prune_ladder() {  # $1=标签  $2=阶梯规格 -> stdout 输出保留的规格
+  local label="$1" spec="$2" item vname vsize cw ch up out=""
+  local -a items=()
+  IFS=',' read -r -a items <<<"$spec"
+  for item in "${items[@]}"; do
+    IFS=':' read -r vname vsize _ _ _ <<<"$item"
+    read -r cw ch up < <(fit_to_box "$vsize")
+    if [ "$up" = "1" ]; then
+      echo "  · 跳过 ${label} ${vname}（档位框 ${vsize} 高于源画面，放大无意义）" >&2
+    else
+      out="${out:+$out,}$item"
+    fi
+  done
+  printf '%s' "$out"
+}
+# 注意：prune_ladder 在子 shell 里执行，只是把筛选结果回传，阶梯变量在父 shell 里赋值
+if [ -n "$LADDER_HEVC" ]; then LADDER_HEVC="$(prune_ladder HEVC "$LADDER_HEVC")"; fi
+if [ -n "$LADDER_H264" ]; then LADDER_H264="$(prune_ladder 'H.264' "$LADDER_H264")"; fi
+
+# 整条阶梯被裁空时撤掉它的输出目录与变量，避免留下空目录
+if [ -z "$LADDER_HEVC" ] && [ -n "$HLS_HEVC" ]; then
+  rm -rf "$HLS_HEVC"; HLS_HEVC=""
+  echo "  · HEVC 阶梯没有可用档位，跳过该阶梯"
+fi
+if [ -z "$LADDER_H264" ] && [ -n "$HLS_H264" ]; then
+  rm -rf "$HLS_H264"; HLS_H264=""
+  echo "  · H.264 阶梯没有可用档位，跳过该阶梯"
+fi
+[ -n "$HLS_HEVC$HLS_H264" ] || die "源画面 ${SRC_W}x${SRC_H} 低于最低档位，没有可编码的档位"
+
 HEVC_ITEMS=()
 H264_ITEMS=()
 if [ -n "$LADDER_HEVC" ]; then IFS=',' read -r -a HEVC_ITEMS <<<"$LADDER_HEVC"; fi
@@ -186,10 +257,12 @@ if [ "$HEVC_N" -gt 0 ]; then
   for item in "${HEVC_ITEMS[@]}"; do
     IFS=':' read -r vname vsize vbr vmax vbuf <<<"$item"
     [ -n "${vname:-}" ] && [ -n "${vsize:-}" ] || die "阶梯格式错误: $item"
-    echo "  · HEVC $vname ($vsize, $vbr)"
-    # SDR 源只缩放；HDR 源在缩放后补一段 BT.2020 PQ -> BT.709 的色调映射
-    VF="scale=$vsize:flags=bicubic"
+    # 等比缩到档位框内并置方形像素；HDR 源在缩放后补色调映射；黑边最后补在色调映射之后
+    read -r cw ch _up < <(fit_to_box "$vsize")
+    echo "  · HEVC $vname ($vsize 框 -> ${cw}x${ch}, $vbr)"
+    VF="scale=$cw:$ch:flags=bicubic,setsar=1"
     if [ -n "$HDR2SDR" ]; then VF="$VF,$HDR2SDR"; fi
+    VF="$VF,pad=${vsize%x*}:${vsize#*x}:(ow-iw)/2:(oh-ih)/2:color=black"
     FC="$FC[v$VI]$VF[o$VI];"
     VOUT_ARGS+=(-map "[o$VI]" -c:v hevc_videotoolbox -tag:v hvc1 -pix_fmt yuv420p \
       -b:v "$vbr" -maxrate "$vmax" -bufsize "$vbuf" -g "$GOP" \
@@ -203,9 +276,11 @@ if [ "$H264_N" -gt 0 ]; then
   for item in "${H264_ITEMS[@]}"; do
     IFS=':' read -r vname vsize vbr vmax vbuf <<<"$item"
     [ -n "${vname:-}" ] && [ -n "${vsize:-}" ] || die "阶梯格式错误: $item"
-    echo "  · H.264 $vname ($vsize, $vbr)"
-    VF="scale=$vsize:flags=bicubic"
+    read -r cw ch _up < <(fit_to_box "$vsize")
+    echo "  · H.264 $vname ($vsize 框 -> ${cw}x${ch}, $vbr)"
+    VF="scale=$cw:$ch:flags=bicubic,setsar=1"
     if [ -n "$HDR2SDR" ]; then VF="$VF,$HDR2SDR"; fi
+    VF="$VF,pad=${vsize%x*}:${vsize#*x}:(ow-iw)/2:(oh-ih)/2:color=black"
     FC="$FC[v$VI]$VF[o$VI];"
     VOUT_ARGS+=(-map "[o$VI]" -c:v h264_videotoolbox -profile:v high -pix_fmt yuv420p \
       -b:v "$vbr" -maxrate "$vmax" -bufsize "$vbuf" -g "$GOP" \
