@@ -25,6 +25,9 @@ export interface BatchSliceState {
   /** 本次批次要产出的编码阶梯 */
   codecs: CodecSelection;
 
+  /** 只编码前 N 秒（0=全片），用于出样片快速验证 */
+  encodeLimitSec: number;
+
   batch: Batch | null;
   startStatus: 'idle' | 'starting' | 'error';
   startError: string | null;
@@ -49,6 +52,7 @@ const initialState: BatchSliceState = {
   pickerError: null,
 
   codecs: { hevc: true, h264: true },
+  encodeLimitSec: 0,
 
   batch: null,
   startStatus: 'idle',
@@ -179,7 +183,7 @@ export const startBatch = createAsyncThunk<Batch, void, { state: RootState; reje
     }
 
     try {
-      return await api.createBatch(outputRoot, tasks, state.codecs);
+      return await api.createBatch(outputRoot, tasks, state.codecs, state.encodeLimitSec);
     } catch (error) {
       return rejectWithValue(error instanceof Error ? error.message : '创建批次失败');
     }
@@ -248,6 +252,9 @@ const batchSlice = createSlice({
     },
     codecToggled(state, action: PayloadAction<{ codec: keyof CodecSelection; enabled: boolean }>) {
       state.codecs[action.payload.codec] = action.payload.enabled;
+    },
+    encodeLimitChanged(state, action: PayloadAction<number>) {
+      state.encodeLimitSec = action.payload;
     },
     audioLabelChanged(
       state,
@@ -437,6 +444,7 @@ export const {
   outputRootChanged,
   pickerErrorCleared,
   codecToggled,
+  encodeLimitChanged,
   audioLabelChanged,
   audioLangChanged,
   audioChannelsChanged,

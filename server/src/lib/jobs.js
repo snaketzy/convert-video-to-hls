@@ -8,11 +8,16 @@ const batches = new Map();
 
 export const TASK_STATUS = ['queued', 'running', 'completed', 'failed', 'cancelled'];
 
+/** 限时样片的目录后缀（须与前端 limitSuffix 一致） */
+export function limitDirSuffix(limitSec) {
+  return limitSec > 0 ? `-${Math.round(limitSec / 60)}min` : '';
+}
+
 /** 为批次里的每个任务分配唯一的输出子目录名 */
-export function assignOutputDirs(outputRoot, dirs) {
+export function assignOutputDirs(outputRoot, dirs, suffix = '') {
   const used = new Set();
   return dirs.map((dir) => {
-    const base = path.basename(dir) || 'output';
+    const base = (path.basename(dir) || 'output') + suffix;
     let candidate = base;
     let index = 2;
     while (used.has(candidate.toLowerCase())) {
@@ -32,6 +37,7 @@ export function createBatch({
   tasks,
   strategy = { mode: 'direct', notice: null },
   codecs = { hevc: true, h264: true },
+  limitSec = 0,
 }) {
   const id = randomUUID();
   const notice = strategy.mode === 'staged' ? strategy.notice : null;
@@ -41,6 +47,7 @@ export function createBatch({
     strategy,
     notice,
     codecs,
+    limitSec,
     status: 'queued',
     error: null,
     createdAt: Date.now(),

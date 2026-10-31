@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import {
   codecToggled,
+  encodeLimitChanged,
   outputRootChanged,
   pickerErrorCleared,
   pickOutputRoot,
@@ -27,10 +28,30 @@ function joinOutPath(root: string, name: string): string {
   return `${root.replace(/\/+$/, '')}/${name}`;
 }
 
+/** 限时样片的目录后缀，需与后端 assignOutputDirs 的规则一致 */
+function limitSuffix(seconds: number): string {
+  return seconds > 0 ? `-${Math.round(seconds / 60)}min` : '';
+}
+
+const ENCODE_LIMITS: Array<{ seconds: number; label: string }> = [
+  { seconds: 300, label: '5分钟' },
+  { seconds: 0, label: '全片' },
+];
+
 export function OutputCard() {
   const dispatch = useAppDispatch();
-  const { items, outputRoot, pickerStatus, pickerError, startStatus, startError, batch, config, codecs } =
-    useAppSelector((state) => state.batch);
+  const {
+    items,
+    outputRoot,
+    pickerStatus,
+    pickerError,
+    startStatus,
+    startError,
+    batch,
+    config,
+    codecs,
+    encodeLimitSec,
+  } = useAppSelector((state) => state.batch);
 
   const pickerSupported = config?.folderPickerSupported !== false && pickerStatus !== 'unsupported';
   const encodable = items.filter((item) => item.exists && item.video);
@@ -84,7 +105,10 @@ export function OutputCard() {
           )}
           {encodable.length > 0 && outputRoot.trim().length > 0 && (
             <p className="text-muted-foreground font-mono text-xs break-all">
-              将写入：{encodable.map((item) => joinOutPath(outputRoot, baseName(item.dir))).join('、')}
+              将写入：
+              {encodable
+                .map((item) => joinOutPath(outputRoot, baseName(item.dir) + limitSuffix(encodeLimitSec)))
+                .join('、')}
             </p>
           )}
         </div>
@@ -135,6 +159,22 @@ export function OutputCard() {
                 />
                 {codec === 'hevc' ? 'HEVC' : 'H264'}
               </Label>
+            ))}
+          </div>
+
+          <div className="border-input flex items-center gap-2 rounded-lg border px-3 py-2">
+            <span className="text-muted-foreground text-xs">编码时长</span>
+            {ENCODE_LIMITS.map((option) => (
+              <Button
+                key={option.seconds}
+                type="button"
+                size="sm"
+                variant={encodeLimitSec === option.seconds ? 'default' : 'outline'}
+                disabled={batchActive || starting}
+                onClick={() => dispatch(encodeLimitChanged(option.seconds))}
+              >
+                {option.label}
+              </Button>
             ))}
           </div>
 

@@ -112,6 +112,9 @@ async function runTask(batch, task) {
     recompute();
   };
 
+  // 只编码前 N 秒（0=全片）：出样片时脚本会同时裁视频/音频/字幕/PGS
+  const limitSec = batch.limitSec > 0 ? Math.floor(batch.limitSec) : 0;
+
   const args = [
     ENCODE_SCRIPT,
     '--input', task.videoPath,
@@ -120,6 +123,8 @@ async function runTask(batch, task) {
     '--progress',
     '--segment-duration', String(task.segmentDuration || SEGMENT_DURATION),
   ];
+
+  if (limitSec > 0) args.push('--duration', String(limitSec));
 
   // 只产出勾选的阶梯：把另一条置空，脚本会跳过它
   if (batch.codecs?.hevc === false) args.push('--ladder-hevc', '');
@@ -144,7 +149,10 @@ async function runTask(batch, task) {
   }
 
   const env = await resolveEnv();
-  const durationSec = task.durationSec || 0;
+  // 进度分母要按实际编码时长算：限时出样片时 out_time 只到 limitSec，
+  // 用整片时长当分母会让进度条卡在 limitSec/全片 的位置不动
+  const fullSec = task.durationSec || 0;
+  const durationSec = limitSec > 0 ? (fullSec > 0 ? Math.min(fullSec, limitSec) : limitSec) : fullSec;
 
   task.phase = 'video';
   task.phaseLabel = PHASE_LABELS.video;

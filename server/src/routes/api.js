@@ -14,7 +14,7 @@ import { FolderPickerUnsupportedError, pickDirectories } from '../lib/folderPick
 import { LANGUAGE_LABELS, langOfName } from '../lib/languages.js';
 import { probeMedia } from '../lib/probe.js';
 import { scanDirectories } from '../lib/scan.js';
-import { assignOutputDirs, createBatch, getBatch, serializeBatch } from '../lib/jobs.js';
+import { assignOutputDirs, createBatch, getBatch, limitDirSuffix, serializeBatch } from '../lib/jobs.js';
 import { cancelBatch, runBatch } from '../lib/pipeline.js';
 
 export const apiRouter = Router();
@@ -127,6 +127,10 @@ apiRouter.post('/batches', async (req, res, next) => {
       throw fail(400, '请至少选择一种编码类型（HEVC / H.264）');
     }
 
+    // 只编码前 N 秒（0=全片），用于快速出样片；非法值一律回退为全片
+    const rawLimit = Number(req.body?.limitSec);
+    const limitSec = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 0;
+
     const prepared = [];
     for (const [index, raw] of rawTasks.entries()) {
       const prefix = `第 ${index + 1} 个目录`;
@@ -202,13 +206,14 @@ apiRouter.post('/batches', async (req, res, next) => {
     const strategy = await resolveOutputStrategy(outputRoot);
     const outDirs = assignOutputDirs(
       outputRoot,
-      prepared.map((task) => task.dir)
+      prepared.map((task) => task.dir),
+      limitDirSuffix(limitSec)
     );
     prepared.forEach((task, index) => {
       task.outDir = outDirs[index];
     });
 
-    const batch = createBatch({ outputRoot, tasks: prepared, strategy, codecs });
+    const batch = createBatch({ outputRoot, tasks: prepared, strategy, codecs, limitSec });
     runBatch(batch).catch((error) => {
       batch.status = 'failed';
       batch.error = error.message;
