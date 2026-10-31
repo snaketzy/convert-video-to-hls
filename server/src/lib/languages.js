@@ -95,3 +95,35 @@ export function langOfName(name) {
   if (text.toLowerCase() !== 'und' && BCP47_PATTERN.test(text)) return text;
   return '';
 }
+
+/**
+ * PGS 位图字幕的标签 -> 语言码 + 显示名
+ *
+ * .sup 文件常以 chs / cht / eng / chs&eng 这类简写命名，两边都不在 LANGUAGE_LABELS 里。
+ * 位图字幕不参与 master.m3u8 的 lang= 匹配，只用于生成 pgs-subs/index.json 的 lang / name。
+ * 查不到时：lang 回退 langOfName()，name 用标签原文。
+ */
+export const PGS_LABELS = [
+  { label: 'chs', lang: 'zh-Hans', name: '简体中文' },
+  { label: 'cht', lang: 'zh-Hant', name: '繁体中文' },
+  { label: 'chi', lang: 'zh', name: '中文' },
+  { label: 'zho', lang: 'zh', name: '中文' },
+  { label: 'eng', lang: 'en', name: 'English' },
+  { label: 'chs&eng', lang: 'zh-Hans', name: '简体中文+英文' },
+  { label: 'cht&eng', lang: 'zh-Hant', name: '繁体中文+英文' },
+  { label: '简体中文', lang: 'zh-Hans', name: '简体中文' },
+  { label: '繁体中文', lang: 'zh-Hant', name: '繁体中文' },
+  { label: '中文', lang: 'zh', name: '中文' },
+  { label: '英文', lang: 'en', name: 'English' },
+  { label: '英语', lang: 'en', name: 'English' },
+];
+
+const PGS_LABEL_MAP = new Map(PGS_LABELS.map((item) => [item.label.toLowerCase(), item]));
+
+/** 查 PGS 标签对应的 { lang, name }；查不到时 lang 回退 langOfName，name 用标签原文 */
+export function pgsMetaOf(rawLabel) {
+  const text = String(rawLabel ?? '').trim();
+  const hit = PGS_LABEL_MAP.get(text.toLowerCase());
+  if (hit) return { lang: hit.lang, name: hit.name };
+  return { lang: langOfName(text), name: text };
+}

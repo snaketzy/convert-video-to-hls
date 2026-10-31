@@ -1,13 +1,14 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { langOfName } from './languages.js';
+import { langOfName, pgsMetaOf } from './languages.js';
 import { probeMedia } from './probe.js';
 
 /** 允许作为主视频的扩展名（优先 .mp4） */
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.mkv']);
 const AUDIO_EXTENSIONS = new Set(['.mp3']);
 const SUBTITLE_EXTENSIONS = new Set(['.vtt']);
+const PGS_EXTENSIONS = new Set(['.sup']);
 
 /**
  * 外挂 mp3 的探测超时。
@@ -106,12 +107,14 @@ export async function scanDirectory(dir, { preferredVideo } = {}) {
       video: null,
       audios: [],
       subtitles: [],
+      pgsSubs: [],
     };
   }
 
   const videoFiles = files.filter((file) => VIDEO_EXTENSIONS.has(file.extension));
   const audioFiles = files.filter((file) => AUDIO_EXTENSIONS.has(file.extension));
   const subtitleFiles = files.filter((file) => SUBTITLE_EXTENSIONS.has(file.extension));
+  const pgsFiles = files.filter((file) => PGS_EXTENSIONS.has(file.extension));
 
   // 主视频：优先用户指定，其次 .mp4，最后体积最大
   const preferred = preferredVideo
@@ -212,6 +215,35 @@ export async function scanDirectory(dir, { preferredVideo } = {}) {
   // 默认音轨排第一位，packager 的 --default_language 只认第一条匹配流
   audios.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
 
+  // PGS 位图字幕：外挂 .sup + 主视频内嵌 hdmv_pgs_subtitle 全部自动收录（无需 UI 勾选）
+  // label 存显示名（写入 pgs-subs/index.json 的 name），lang 用语言码（用作 .sup 文件名）
+  const pgsSubs = [];
+  for (const stream of videoProbe?.subtitles ?? []) {
+    if (stream.codec !== 'hdmv_pgs_subtitle') continue;
+    const meta = pgsMetaOf(stream.title || stream.language || `PGS ${stream.ordinal + 1}`);
+    pgsSubs.push({
+      id: `pgs:main:${stream.ordinal}`,
+      source: 'main',
+      path: null,
+      streamIndex: stream.ordinal,
+      label: meta.name,
+      lang: meta.lang,
+      sizeBytes: null,
+    });
+  }
+  for (const file of pgsFiles) {
+    const meta = pgsMetaOf(labelFromFileName(file.name, videoBase));
+    pgsSubs.push({
+      id: `pgs:file:${file.path}`,
+      source: 'file',
+      path: file.path,
+      streamIndex: null,
+      label: meta.name,
+      lang: meta.lang,
+      sizeBytes: file.sizeBytes,
+    });
+  }
+
   return {
     dir,
     name,
@@ -237,6 +269,7 @@ export async function scanDirectory(dir, { preferredVideo } = {}) {
       : null,
     audios,
     subtitles,
+    pgsSubs,
   };
 }
 

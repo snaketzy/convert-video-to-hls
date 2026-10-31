@@ -186,6 +186,25 @@ apiRouter.post('/batches', async (req, res, next) => {
         subtitles.unshift(subtitles.splice(defaultSubtitleIndex, 1)[0]);
       }
 
+      // PGS 位图字幕：全自动收录（外挂 .sup + 主视频内嵌轨），无 UI 勾选
+      const rawPgs = Array.isArray(raw?.pgsSubs) ? raw.pgsSubs : [];
+      const pgsSubs = [];
+      for (const pgs of rawPgs) {
+        const label = requireToken(pgs?.label || 'PGS', `${prefix}的 PGS 字幕名`);
+        const lang = String(pgs?.lang || '').trim();
+        if (pgs?.source === 'main') {
+          const streamIndex = Number(pgs?.streamIndex);
+          if (!Number.isInteger(streamIndex) || streamIndex < 0) {
+            throw fail(400, `${prefix}的 PGS 内嵌轨序号非法`);
+          }
+          pgsSubs.push({ source: 'main', path: null, streamIndex, label, lang });
+        } else {
+          const pgsPath = requireAbsolutePath(pgs?.path, `${prefix}的 PGS 字幕文件`);
+          await requireFile(pgsPath, `${prefix}的 PGS 字幕文件`, new Set(['.sup']));
+          pgsSubs.push({ source: 'file', path: pgsPath, streamIndex: null, label, lang });
+        }
+      }
+
       let durationSec = Number(raw?.durationSec) || 0;
       if (!durationSec) {
         const probe = await probeMedia(videoPath).catch(() => null);
@@ -199,6 +218,7 @@ apiRouter.post('/batches', async (req, res, next) => {
         durationSec,
         audios: orderedAudios,
         subtitles,
+        pgsSubs,
       });
     }
 

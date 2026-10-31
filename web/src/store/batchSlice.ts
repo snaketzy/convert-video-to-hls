@@ -97,6 +97,13 @@ export function buildSubmitTasks(state: BatchSliceState): SubmitTask[] {
         defaultAudioIndex,
         subtitles: item.subtitles.map((subtitle) => ({ path: subtitle.path, label: subtitle.label })),
         defaultSubtitleIndex,
+        pgsSubs: item.pgsSubs.map((pgs) => ({
+          source: pgs.source,
+          path: pgs.path,
+          streamIndex: pgs.streamIndex,
+          label: pgs.label,
+          lang: pgs.lang,
+        })),
       };
     });
 }

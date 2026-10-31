@@ -32,6 +32,7 @@ HLS_H264=""
 AUDIO=""
 SUBS_PREFIX=""
 SUBS_LIST=""
+PGS_LIST=""
 DURATION=0
 SEG=6
 GOP=""
@@ -64,6 +65,11 @@ usage() {
                          <标签> 末尾的 .default 会被去掉，并作为默认字幕
   --subs-list SPEC       字幕列表，逗号分隔，每项 标签:字幕文件路径
                          与 --subs-prefix 二选一；标签末尾的 .default 会被去掉
+  --pgs-list SPEC        PGS 位图字幕（.sup）列表，逗号分隔，每项 名称:语言码:源
+                         源写 main#N 取主视频第 N 条字幕流（0 起，须为 hdmv_pgs_subtitle），
+                         否则给外挂 .sup 文件路径
+                         抽出的 .sup 以 <语言码>.sup 写进每条阶梯的 pgs-subs/，
+                         并生成 pgs-subs/index.json（与 hls.min.js 平级）
   --duration SEC         只处理前 SEC 秒（0=全片，默认 0）
   --segment-duration SEC 分片时长，默认 6
   --gop N                手动指定 GOP 帧数，默认按 fps*分片时长 取整
@@ -87,6 +93,7 @@ while [ $# -gt 0 ]; do
     --audio) AUDIO="$2"; shift 2;;
     --subs-prefix) SUBS_PREFIX="$2"; shift 2;;
     --subs-list) SUBS_LIST="$2"; shift 2;;
+    --pgs-list) PGS_LIST="$2"; shift 2;;
     --duration) DURATION="$2"; shift 2;;
     --segment-duration) SEG="$2"; shift 2;;
     --gop) GOP="$2"; shift 2;;
@@ -432,6 +439,58 @@ lang_of() {
   esac
 }
 
+# ---------- PGS 位图字幕（.sup） ----------
+# 先抽到 mezz/pgs/，打包后再写进每条阶梯的 pgs-subs/（与 hls.min.js 平级）
+# PGS_ROWS 每行: 语言码|名称|文件名|mezz序号；用换行分隔的字符串而非数组：bash 3.2 + set -u 展开空数组会报错
+PGS_ROWS=""
+PGS_FILES=""
+PGS_N=0
+if [ -n "$PGS_LIST" ]; then
+  mkdir -p "$MEZZ/pgs"
+  # 只编码前 N 秒时把 .sup 一起裁齐，保证样片自洽；全片则原样保留（外挂 .sup 直接无损复制）
+  PGS_TRIM=""
+  if [ "$DURATION" -gt 0 ]; then PGS_TRIM="-t $DUR"; fi
+  IFS=',' read -r -a PGS_ITEMS <<<"$PGS_LIST"
+  pgs_i=0
+  for entry in "${PGS_ITEMS[@]}"; do
+    [ -n "$entry" ] || continue
+    pname="${entry%%:*}"
+    pre="${entry#*:}"
+    plang="${pre%%:*}"
+    psrc="${pre#*:}"
+    [ "$pre" != "$psrc" ] || die "PGS 条目格式错误（应为 名称:语言码:源）: $entry"
+    pout="$MEZZ/pgs/$pgs_i.sup"
+    case "$psrc" in
+      main#*)
+        pord="${psrc#main#}"
+        case "$pord" in ''|*[!0-9]*) die "PGS 内嵌轨序号非法: $entry";; esac
+        # shellcheck disable=SC2086
+        "$FFMPEG" -y -hide_banner -loglevel error -nostats $PGS_TRIM -i "$INPUT" \
+          -map "0:s:$pord" -c:s copy -f sup "$pout" || die "抽取内嵌 PGS 失败: $entry"
+        ;;
+      *)
+        [ -f "$psrc" ] || die "PGS 文件不存在: $psrc"
+        # shellcheck disable=SC2086
+        "$FFMPEG" -y -hide_banner -loglevel error -nostats $PGS_TRIM -f sup -i "$psrc" \
+          -c:s copy -f sup "$pout" || die "抽取 PGS 失败: $psrc"
+        ;;
+    esac
+    # 文件名用语言码；语言码缺失时退回 und；重名追加 -2 / -3 ...
+    plang="${plang:-und}"
+    pbase="$(printf '%s' "$plang" | tr -c 'A-Za-z0-9._-' '_')"
+    [ -n "$pbase" ] || pbase="pgs$pgs_i"
+    pfile="$pbase.sup"; pn=2
+    while printf '%s\n' "$PGS_FILES" | grep -qxF "$pfile"; do
+      pfile="$pbase-$pn.sup"; pn=$((pn + 1))
+    done
+    PGS_FILES="${PGS_FILES}${pfile}"$'\n'
+    PGS_ROWS="${PGS_ROWS}${plang}|${pname}|${pfile}|${pgs_i}"$'\n'
+    PGS_N=$((PGS_N + 1))
+    pgs_i=$((pgs_i + 1))
+  done
+  echo "  · PGS 位图字幕 $PGS_N 条"
+fi
+
 # ---------- 4. 打包 ----------
 echo "=== 4/4 shaka-packager 组 HLS ==="
 
@@ -480,6 +539,30 @@ pack_into() {  # $1=codec(hevc|h264)  $2=输出目录  其余=视频档位规格
 
 if [ "$HEVC_N" -gt 0 ]; then pack_into hevc "$HLS_HEVC" "${HEVC_ITEMS[@]}"; fi
 if [ "$H264_N" -gt 0 ]; then pack_into h264 "$HLS_H264" "${H264_ITEMS[@]}"; fi
+
+# ---------- PGS 字幕落盘 ----------
+# 每条阶梯目录下建 pgs-subs/（与 hls.min.js 平级）：<语言码>.sup + index.json
+write_pgs_subs() {  # $1=HLS 输出目录
+  local dir="$1" json="[" first=1 lang name file idx
+  [ "$PGS_N" -gt 0 ] || return 0
+  mkdir -p "$dir/pgs-subs"
+  while IFS='|' read -r lang name file idx; do
+    [ -n "$file" ] || continue
+    cp "$MEZZ/pgs/$idx.sup" "$dir/pgs-subs/$file"
+    # JSON 里不能出现裸引号 / 反斜杠
+    name="${name//\\/}"
+    name="${name//\"/}"
+    if [ "$first" = "1" ]; then first=0; else json="$json,"; fi
+    json="$json
+  { \"lang\": \"$lang\", \"name\": \"$name\", \"file\": \"$file\" }"
+  done <<<"$PGS_ROWS"
+  printf '%s\n]\n' "$json" > "$dir/pgs-subs/index.json"
+}
+
+if [ "$PGS_N" -gt 0 ]; then
+  if [ -n "$HLS_HEVC" ]; then write_pgs_subs "$HLS_HEVC"; fi
+  if [ -n "$HLS_H264" ]; then write_pgs_subs "$HLS_H264"; fi
+fi
 
 # ---------- 附带播放器 ----------
 if [ "$COPY_PLAYER" = "1" ] && [ -f "$SKILL_DIR/assets/player.html" ]; then
@@ -536,3 +619,7 @@ echo
 echo "完成。master 播放列表:"
 if [ -n "$HLS_HEVC" ]; then echo "  hevc: $HLS_HEVC/master.m3u8"; fi
 if [ -n "$HLS_H264" ]; then echo "  h264: $HLS_H264/master.m3u8"; fi
+if [ "$PGS_N" -gt 0 ]; then
+  if [ -n "$HLS_HEVC" ]; then echo "  hevc pgs: $HLS_HEVC/pgs-subs/index.json"; fi
+  if [ -n "$HLS_H264" ]; then echo "  h264 pgs: $HLS_H264/pgs-subs/index.json"; fi
+fi

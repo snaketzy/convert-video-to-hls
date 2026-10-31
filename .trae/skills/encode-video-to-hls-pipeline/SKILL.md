@@ -21,6 +21,9 @@ description: Encode local video into multi-bitrate multi-audio multi-subtitle HL
 │   ├── 2160/init.mp4 + 1..N.m4s + playlist.m3u8   (1080/ 720/ 480/ 360/ 同)
 │   ├── a_English_5_1/...
 │   ├── s_English/...
+│   ├── pgs-subs/             # PGS 位图字幕（与 hls.min.js 平级）
+│   │   ├── index.json        # 索引：[{ lang, name, file }]
+│   │   └── <语言码>.sup ...
 │   ├── player.html           # 校验用播放器
 │   └── hls.min.js            # 内置 hls.js（Chrome/Firefox 播 HLS 必需，随播放器一起复制）
 └── H264/                     # 结构与 HEVC/ 相同，视频档为 1080/720/480/360
@@ -91,6 +94,17 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 
 - `--audio` 的源写 `main` 表示取主视频第 0 条音频；否则给外挂音频文件。
 - `--subs-prefix` 会匹配 `<前缀>.<标签>.vtt`，标签末尾的 `.default` 去掉后即默认字幕。
+- `--pgs-list` 收录 PGS 位图字幕（外挂 `.sup` + 主视频内嵌轨），每项格式 `名称:语言码:源`，多项用逗号分隔；源写 `main#<N>` 表示主视频第 N 条字幕流（0 基），否则给外挂 `.sup` 路径。抽出的字幕落到各输出目录的 `pgs-subs/`（与 `hls.min.js` 平级），文件名用语言码（`<语言码>.sup`），并写一份 `index.json`：
+  ```bash
+  --pgs-list "简体中文:zh-Hans:main#0,English:en:$P.eng.sup"
+  ```
+  ```json
+  [
+    { "lang": "zh-Hans", "name": "简体中文", "file": "zh-Hans.sup" },
+    { "lang": "en", "name": "English", "file": "en.sup" }
+  ]
+  ```
+  PGS 是位图字幕，不参与 `master.m3u8` 的 `EXT-X-MEDIA`，由播放端（libpgs 等）按 `index.json` 自行加载渲染；`--duration` 限时同样会裁剪 PGS。
 - 只要前 10 分钟做预演：加 `--duration 600`。全片留空。
 - 想调整档位：`--ladder-hevc "2160:3840x2160:12000k:13000k:24000k,1080:1920x1080:4000k:4200k:8000k"`、`--ladder-h264 "1080:1920x1080:5000k:5350k:10000k"`。
 - 两条阶梯只按 `--ladder-hevc` / `--ladder-h264` 分别产出 `HEVC/master.m3u8` 与 `H264/master.m3u8`。
@@ -113,6 +127,8 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 5. **每条音轨/字幕都要独立编成 mezz 再交给 packager**（`hls_group_id` 分组成 `EXT-X-MEDIA`），不要用 ffmpeg 的 `var_stream_map` 一次出多轨，那样很难控制默认轨和字幕组。
 
 6. 字幕显示名会做 `slug` 转换（去括号、空格转下划线），语言码查脚本里的 `lang_of()`；查不到就不带 `lang=`，track 仍会保留。
+
+7. **PGS 位图字幕用 `-f sup -c:s copy` 无损抽取**：内嵌轨走 `-map 0:s:<N>`，外挂 `.sup` 走 `-f sup -i`；与 WebVTT 不同，`-t` 对 sup 是容器级裁剪、`-ss` 直接生效，无需额外过滤。输出文件名以语言码命名（同名时追加 `-2`、`-3` 去重），落盘到 `pgs-subs/` 并同步生成 `index.json`。
 
 ## 校验
 

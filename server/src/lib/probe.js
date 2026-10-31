@@ -51,6 +51,14 @@ export async function probeMedia(filePath, { timeoutMs = 120000 } = {}) {
   const subtitleStreams = streams.filter(
     (stream) => stream.codec_type === 'subtitle' && stream.codec_name !== 'bin_data'
   );
+  // 逐条保留字幕流明细：scan 需要据此识别内嵌 PGS（hdmv_pgs_subtitle），
+  // ordinal 即 ffmpeg -map 0:s:N 里的 N（按字幕流次序从 0 起）
+  const subtitles = subtitleStreams.map((stream, ordinal) => ({
+    ordinal,
+    codec: stream.codec_name || 'unknown',
+    language: stream.tags?.language || null,
+    title: stream.tags?.title || null,
+  }));
 
   const format = raw.format || {};
   const durationSec =
@@ -83,5 +91,6 @@ export async function probeMedia(filePath, { timeoutMs = 120000 } = {}) {
       : null,
     audioCount: audioStreams.length,
     subtitleCount: subtitleStreams.length,
+    subtitles,
   };
 }

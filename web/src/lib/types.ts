@@ -69,6 +69,21 @@ export interface ScanSubtitle {
   isDefault: boolean;
 }
 
+/** PGS 位图字幕轨：外挂 .sup 或主视频内嵌轨，编码时自动收录 */
+export interface ScanPgsSub {
+  id: string;
+  source: 'main' | 'file';
+  /** 外挂 .sup 的路径；内嵌轨为 null */
+  path: string | null;
+  /** 内嵌轨在 -map 0:s:N 里的 N；外挂为 null */
+  streamIndex: number | null;
+  /** 显示名，写入 pgs-subs/index.json 的 name */
+  label: string;
+  /** 语言码，用作 pgs-subs 下的 .sup 文件名 */
+  lang: string;
+  sizeBytes: number | null;
+}
+
 export interface ScanItem {
   dir: string;
   name: string;
@@ -78,6 +93,7 @@ export interface ScanItem {
   video: ScanVideoInfo | null;
   audios: ScanAudio[];
   subtitles: ScanSubtitle[];
+  pgsSubs: ScanPgsSub[];
 }
 
 export type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -154,4 +170,11 @@ export interface SubmitTask {
   defaultAudioIndex: number;
   subtitles: Array<{ path: string; label: string }>;
   defaultSubtitleIndex: number;
+  pgsSubs: Array<{
+    source: 'main' | 'file';
+    path: string | null;
+    streamIndex: number | null;
+    label: string;
+    lang: string;
+  }>;
 }

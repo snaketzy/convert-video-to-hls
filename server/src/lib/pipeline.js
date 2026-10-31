@@ -48,6 +48,16 @@ function buildSubsSpec(subtitles) {
   return subtitles.map((subtitle) => `${sanitizeToken(subtitle.label)}:${subtitle.path}`).join(',');
 }
 
+/** PGS 字幕规格串：名称:语言码:源；源为 main#N（主视频第 N 条字幕流）或外挂 .sup 路径 */
+function buildPgsSpec(pgsSubs) {
+  return pgsSubs
+    .map((pgs) => {
+      const source = pgs.source === 'main' ? `main#${pgs.streamIndex}` : pgs.path;
+      return `${sanitizeToken(pgs.label, 'PGS')}:${pgs.lang || ''}:${source}`;
+    })
+    .join(',');
+}
+
 async function resolveEnv() {
   const env = { ...process.env };
   try {
@@ -67,7 +77,7 @@ function buildPhases(task) {
     // 脚本把全部档位合并成「一次解码 + N 路并发输出」的单个 ffmpeg 进程，故视频阶段恒为 1 项
     video: 1,
     audio: Math.max(1, task.audios.length),
-    subs: task.subtitles.length > 0 ? 1 : 0,
+    subs: task.subtitles.length > 0 || (task.pgsSubs?.length ?? 0) > 0 ? 1 : 0,
     pack: 1,
   };
 
@@ -146,6 +156,11 @@ async function runTask(batch, task) {
     args.push('--subs-list', buildSubsSpec(task.subtitles));
     const defaultTextLang = usableLang(task.subtitles[0]?.lang);
     if (defaultTextLang) args.push('--default-text-lang', defaultTextLang);
+  }
+
+  // PGS 位图字幕：抽成 pgs-subs/<语言码>.sup + index.json，与 hls.min.js 平级
+  if (task.pgsSubs?.length > 0) {
+    args.push('--pgs-list', buildPgsSpec(task.pgsSubs));
   }
 
   const env = await resolveEnv();
