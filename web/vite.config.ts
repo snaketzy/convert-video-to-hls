@@ -12,7 +12,7 @@ export default defineConfig({
   },
   server: {
     // 固定独立端口并禁止顺延，避免代理请求被同端口上的其他本地项目截获
-    port: 5177,
+    port: 5171,
     strictPort: true,
     host: '127.0.0.1',
     proxy: {
