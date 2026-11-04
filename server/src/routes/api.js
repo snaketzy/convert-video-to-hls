@@ -167,7 +167,8 @@ apiRouter.post('/batches', async (req, res, next) => {
       const subtitles = [];
       for (const subtitle of rawSubtitles) {
         const subtitlePath = requireAbsolutePath(subtitle?.path, `${prefix}的字幕文件`);
-        await requireFile(subtitlePath, `${prefix}的字幕文件`, new Set(['.vtt']));
+        // .srt 由编码脚本内部转成 WebVTT 后再打包
+        await requireFile(subtitlePath, `${prefix}的字幕文件`, new Set(['.vtt', '.srt']));
         const label = requireToken(
           subtitle?.label || path.basename(subtitlePath, path.extname(subtitlePath)),
           `${prefix}的字幕显示名`

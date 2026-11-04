@@ -5,6 +5,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -24,6 +25,7 @@ import {
   defaultSubtitleChanged,
   itemRemoved,
   rescanDir,
+  subtitleEnabledToggled,
   subtitleLabelChanged,
   subtitleRemoved,
 } from '@/store/batchSlice';
@@ -307,18 +309,20 @@ export function DirReviewCard({ item, index }: DirReviewCardProps) {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-medium">字幕</p>
                 <p className="text-muted-foreground text-xs">
-                  显示名需与 skill 的语言表一致才能带上 lang=；不匹配时该轨仍保留但不带 lang。
+                  SRT 需勾选「收录」后转为 WebVTT 一并打包；显示名需与 skill
+                  的语言表一致才能带上 lang=，不匹配时该轨仍保留但不带 lang。
                 </p>
               </div>
               {item.subtitles.length === 0 ? (
                 <p className="text-muted-foreground py-4 text-center text-sm">
-                  没有 WebVTT 字幕（.vtt）
+                  没有字幕（.vtt / .srt）
                 </p>
               ) : (
                 <div className="rounded-lg border">
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead className="w-16">收录</TableHead>
                         <TableHead className="w-16">默认</TableHead>
                         <TableHead>显示名</TableHead>
                         <TableHead className="w-28">语言码</TableHead>
@@ -332,11 +336,29 @@ export function DirReviewCard({ item, index }: DirReviewCardProps) {
                         return (
                           <TableRow key={subtitle.id}>
                             <TableCell>
+                              {subtitle.format === 'srt' && (
+                                <Checkbox
+                                  checked={subtitle.enabled}
+                                  onCheckedChange={(checked) =>
+                                    dispatch(
+                                      subtitleEnabledToggled({
+                                        itemIndex: index,
+                                        subtitleId: subtitle.id,
+                                        enabled: checked === true,
+                                      })
+                                    )
+                                  }
+                                  aria-label={`收录 SRT 字幕「${subtitle.label}」（转为 WebVTT）`}
+                                />
+                              )}
+                            </TableCell>
+                            <TableCell>
                               <input
                                 type="radio"
                                 name={`default-subtitle-${index}`}
                                 className="size-4 accent-primary"
                                 checked={subtitle.isDefault}
+                                disabled={!subtitle.enabled}
                                 onChange={() =>
                                   dispatch(
                                     defaultSubtitleChanged({
@@ -376,6 +398,11 @@ export function DirReviewCard({ item, index }: DirReviewCardProps) {
                             <TableCell className="text-muted-foreground font-mono text-xs break-all">
                               {baseName(subtitle.path)}
                               <span className="ml-2">{formatBytes(subtitle.sizeBytes)}</span>
+                              {subtitle.format === 'srt' && (
+                                <Badge variant="outline" className="ml-2">
+                                  SRT→VTT
+                                </Badge>
+                              )}
                             </TableCell>
                             <TableCell>
                               <Button

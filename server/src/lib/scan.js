@@ -7,7 +7,8 @@ import { probeMedia } from './probe.js';
 /** 允许作为主视频的扩展名（优先 .mp4） */
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.mkv']);
 const AUDIO_EXTENSIONS = new Set(['.mp3']);
-const SUBTITLE_EXTENSIONS = new Set(['.vtt']);
+// .srt 不能直接进 HLS，需先转 WebVTT；扫描时先收录候选项，由 UI 勾选后再转码
+const SUBTITLE_EXTENSIONS = new Set(['.vtt', '.srt']);
 const PGS_EXTENSIONS = new Set(['.sup']);
 
 /**
@@ -185,28 +186,35 @@ export async function scanDirectory(dir, { preferredVideo } = {}) {
     const isDefault = /\.default$/i.test(rawLabel);
     const label = rawLabel.replace(/\.default$/i, '');
     const lang = langOfName(label);
+    const format = file.extension === '.srt' ? 'srt' : 'vtt';
     return {
       id: `sub:${file.path}`,
       path: file.path,
       label,
       lang,
+      format,
+      // .vtt 可直接打包；.srt 需转 WebVTT，默认不收录，等 UI 勾选
+      enabled: format === 'vtt',
       sizeBytes: file.sizeBytes,
       isDefault,
     };
   });
 
+  const includedSubtitles = subtitles.filter((subtitle) => subtitle.enabled);
+
   if (subtitles.length === 0) {
-    warnings.push('未找到 WebVTT 字幕（.vtt）');
+    warnings.push('未找到字幕（.vtt / .srt）');
   } else {
-    for (const subtitle of subtitles) {
+    for (const subtitle of includedSubtitles) {
       if (!subtitle.lang) {
         warnings.push(
           `字幕「${subtitle.label}」的显示名未匹配到语言码，master.m3u8 中该轨将不带 lang=`
         );
       }
     }
-    if (!subtitles.some((subtitle) => subtitle.isDefault)) {
-      subtitles[0].isDefault = true;
+    // 默认字幕只在会被收录的条目里挑（.srt 未勾选时不参与）
+    if (includedSubtitles.length > 0 && !includedSubtitles.some((s) => s.isDefault)) {
+      includedSubtitles[0].isDefault = true;
     }
     // 默认字幕排在第一位，packager 的 --default_text_language 只认第一条匹配流
     subtitles.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));

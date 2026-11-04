@@ -60,11 +60,17 @@ export interface ScanAudio {
   isDefault: boolean;
 }
 
+/** 文本字幕格式；.srt 需在编码时转成 WebVTT 才能进 HLS */
+export type SubtitleFormat = 'vtt' | 'srt';
+
 export interface ScanSubtitle {
   id: string;
   path: string;
   label: string;
   lang: string;
+  format: SubtitleFormat;
+  /** 是否收录进 HLS；.vtt 恒为 true，.srt 由用户勾选 */
+  enabled: boolean;
   sizeBytes: number;
   isDefault: boolean;
 }

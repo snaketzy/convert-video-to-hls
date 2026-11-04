@@ -5,7 +5,7 @@ description: Encode local video into multi-bitrate multi-audio multi-subtitle HL
 
 # 本地视频 -> 多码率 / 多音轨 / 多字幕 HLS
 
-把「一个主视频 + 若干外挂音轨 + 若干 WebVTT 字幕」压成一套标准 HLS。
+把「一个主视频 + 若干外挂音轨 + 若干文本字幕（WebVTT / SRT）」压成一套标准 HLS。
 
 主视频**一次解码**后并发输出**两条阶梯**：HEVC 覆盖 2160P→360P、H.264 覆盖 1080P→360P，分别打包进各自的输出目录：
 
@@ -22,7 +22,7 @@ description: Encode local video into multi-bitrate multi-audio multi-subtitle HL
 │   ├── a_English_5_1/...
 │   ├── s_English/...
 │   ├── pgs-subs/             # PGS 位图字幕（与 hls.min.js 平级）
-│   │   ├── index.json        # 索引：[{ lang, name, file }]
+│   │   ├── index.json        # 索引：[{ lang, name, file, offset }]
 │   │   └── <语言码>.sup ...
 │   ├── player.html           # 校验用播放器
 │   └── hls.min.js            # 内置 hls.js（Chrome/Firefox 播 HLS 必需，随播放器一起复制）
@@ -93,18 +93,19 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 ```
 
 - `--audio` 的源写 `main` 表示取主视频第 0 条音频；否则给外挂音频文件。
-- `--subs-prefix` 会匹配 `<前缀>.<标签>.vtt`，标签末尾的 `.default` 去掉后即默认字幕。
+- `--subs-prefix` 会匹配 `<前缀>.<标签>.vtt` / `.srt`，标签末尾的 `.default` 去掉后即默认字幕。
+- 文本字幕支持 `.vtt` 与 `.srt`：`.srt` 会先用 `ffmpeg -c:s webvtt` 转成 WebVTT，再走统一的时间戳裁剪与规范化。
 - `--pgs-list` 收录 PGS 位图字幕（外挂 `.sup` + 主视频内嵌轨），每项格式 `名称:语言码:源`，多项用逗号分隔；源写 `main#<N>` 表示主视频第 N 条字幕流（0 基），否则给外挂 `.sup` 路径。抽出的字幕落到各输出目录的 `pgs-subs/`（与 `hls.min.js` 平级），文件名用语言码（`<语言码>.sup`），并写一份 `index.json`：
   ```bash
   --pgs-list "简体中文:zh-Hans:main#0,English:en:$P.eng.sup"
   ```
   ```json
   [
-    { "lang": "zh-Hans", "name": "简体中文", "file": "zh-Hans.sup" },
-    { "lang": "en", "name": "English", "file": "en.sup" }
+    { "lang": "zh-Hans", "name": "简体中文", "file": "zh-Hans.sup", "offset": 0 },
+    { "lang": "en", "name": "English", "file": "en.sup", "offset": 0 }
   ]
   ```
-  PGS 是位图字幕，不参与 `master.m3u8` 的 `EXT-X-MEDIA`，由播放端（libpgs 等）按 `index.json` 自行加载渲染；`--duration` 限时同样会裁剪 PGS。
+  `offset`（秒）是该轨相对影片时间轴的时间偏移，是「产出 `.sup` 是否保留源绝对时间轴」的显式契约：抽取时统一加 `-copyts`，产出 `.sup` 保留源 PTS（外挂 `.sup` 原本从第 87.88 秒起，抽出后仍从 87.88 起），因此 `offset` 恒为 `0`，播放端直接用 `.sup` 内时间即可、无需补偿。PGS 是位图字幕，不参与 `master.m3u8` 的 `EXT-X-MEDIA`，由播放端（libpgs 等）按 `index.json` 自行加载渲染；`--duration` 限时同样会裁剪 PGS。
 - 只要前 10 分钟做预演：加 `--duration 600`。全片留空。
 - 想调整档位：`--ladder-hevc "2160:3840x2160:12000k:13000k:24000k,1080:1920x1080:4000k:4200k:8000k"`、`--ladder-h264 "1080:1920x1080:5000k:5350k:10000k"`。
 - 两条阶梯只按 `--ladder-hevc` / `--ladder-h264` 分别产出 `HEVC/master.m3u8` 与 `H264/master.m3u8`。
@@ -126,9 +127,11 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 
 5. **每条音轨/字幕都要独立编成 mezz 再交给 packager**（`hls_group_id` 分组成 `EXT-X-MEDIA`），不要用 ffmpeg 的 `var_stream_map` 一次出多轨，那样很难控制默认轨和字幕组。
 
-6. 字幕显示名会做 `slug` 转换（去括号、空格转下划线），语言码查脚本里的 `lang_of()`；查不到就不带 `lang=`，track 仍会保留。
+6. 音轨/字幕的显示名都会转成 `slug` 决定输出目录名：音轨是非 `A-Za-z0-9_-` 一律换 `_`，字幕是去括号、空格转下划线；字幕的语言码再拿显示名反查 `lang_of()`，查不到就不带 `lang=`（track 仍保留）。**显示名重复时（音轨如主轨 title 与外挂文件都叫 `English`；字幕如在 UI 里给多条字幕选了同一个显示名 `Chinese`）脚本会自动给重复项追加 `-2` / `-3`**；否则会互相覆盖 mezz 文件并让 packager 报 `Seeing duplicated outputs 'a_English/init.mp4'` 或 `Seeing duplicated segment templates 's_Chinese/$Number$.vtt'` 中止。音轨重复时显示名同步补 `#2` / `#3` 便于区分；字幕显示名保持原样不改动（改名会让 `lang_of()` 反查语言码失效）。
 
 7. **PGS 位图字幕用 `-f sup -c:s copy` 无损抽取**：内嵌轨走 `-map 0:s:<N>`，外挂 `.sup` 走 `-f sup -i`；与 WebVTT 不同，`-t` 对 sup 是容器级裁剪、`-ss` 直接生效，无需额外过滤。输出文件名以语言码命名（同名时追加 `-2`、`-3` 去重），落盘到 `pgs-subs/` 并同步生成 `index.json`。
+
+8. **抽取 PGS 必须加 `-copyts` 保留原始时间轴**：ffmpeg 默认会减掉输入的 `start_time` 把输出 PTS 归零——外挂 `.sup` 原本从第 87.88 秒起（`PG` 段头第 2–5 字节大端 PTS = 7909200），不加 `-copyts` 时经 `-f sup -c:s copy` 抽出后首包 PTS 会变成 0，原始偏移被抹掉，播放端会从第 0 秒就弹出字幕。脚本在两条抽取命令（内嵌 `main#N` 与外挂 `.sup`）上都加了 `-copyts`（输入选项，置于 `-i` 前），产出 `.sup` 保留源绝对时间轴（外挂仍是 87.88）。`index.json` 的 `offset` 按「源首 PTS − 产出首 PTS」计算，在此前提下恒为 `0`，作为播放端「无需补偿」的显式契约。
 
 ## 校验
 

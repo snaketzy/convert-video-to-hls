@@ -79,9 +79,11 @@ export function buildSubmitTasks(state: BatchSliceState): SubmitTask[] {
         0,
         item.audios.findIndex((audio) => audio.isDefault)
       );
+      // .srt 只有勾选「收录」后才提交，编码脚本会把它转成 WebVTT
+      const includedSubtitles = item.subtitles.filter((subtitle) => subtitle.enabled);
       const defaultSubtitleIndex = Math.max(
         0,
-        item.subtitles.findIndex((subtitle) => subtitle.isDefault)
+        includedSubtitles.findIndex((subtitle) => subtitle.isDefault)
       );
       return {
         dir: item.dir,
@@ -95,7 +97,10 @@ export function buildSubmitTasks(state: BatchSliceState): SubmitTask[] {
           channels: audio.channels,
         })),
         defaultAudioIndex,
-        subtitles: item.subtitles.map((subtitle) => ({ path: subtitle.path, label: subtitle.label })),
+        subtitles: includedSubtitles.map((subtitle) => ({
+          path: subtitle.path,
+          label: subtitle.label,
+        })),
         defaultSubtitleIndex,
         pgsSubs: item.pgsSubs.map((pgs) => ({
           source: pgs.source,
@@ -319,6 +324,28 @@ const batchSlice = createSlice({
         subtitle.isDefault = subtitle.id === action.payload.subtitleId;
       }
     },
+    /** 勾选/取消勾选 .srt（收录后编码时转 WebVTT）；.vtt 恒为收录 */
+    subtitleEnabledToggled(
+      state,
+      action: PayloadAction<{ itemIndex: number; subtitleId: string; enabled: boolean }>
+    ) {
+      const item = state.items[action.payload.itemIndex];
+      const subtitle = item?.subtitles.find(
+        (candidate) => candidate.id === action.payload.subtitleId
+      );
+      if (!item || !subtitle) return;
+      subtitle.enabled = action.payload.enabled;
+      if (action.payload.enabled) {
+        // 勾选后若还没有默认字幕，则把这条设为默认
+        if (!item.subtitles.some((candidate) => candidate.enabled && candidate.isDefault)) {
+          subtitle.isDefault = true;
+        }
+      } else if (subtitle.isDefault) {
+        subtitle.isDefault = false;
+        const next = item.subtitles.find((candidate) => candidate.enabled);
+        if (next) next.isDefault = true;
+      }
+    },
     subtitleRemoved(
       state,
       action: PayloadAction<{ itemIndex: number; subtitleId: string }>
@@ -330,7 +357,10 @@ const batchSlice = createSlice({
       );
       if (index < 0) return;
       const [removed] = item.subtitles.splice(index, 1);
-      if (removed.isDefault && item.subtitles.length > 0) item.subtitles[0].isDefault = true;
+      if (removed.isDefault) {
+        const next = item.subtitles.find((candidate) => candidate.enabled);
+        if (next) next.isDefault = true;
+      }
     },
     startErrorCleared(state) {
       state.startError = null;
@@ -458,6 +488,7 @@ export const {
   defaultAudioChanged,
   subtitleLabelChanged,
   defaultSubtitleChanged,
+  subtitleEnabledToggled,
   subtitleRemoved,
   startErrorCleared,
   batchReset,

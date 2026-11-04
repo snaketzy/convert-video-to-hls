@@ -61,15 +61,17 @@ usage() {
   --audio SPEC           音轨，逗号分隔，每项 name:lang:声道数:码率:源
                          源写 main 表示取主视频第 0 条音频，否则给外挂音频文件路径
                          默认 English:en:2:192k:main
-  --subs-prefix PATH     字幕前缀；匹配 <前缀>.<标签>.vtt
+  --subs-prefix PATH     字幕前缀；匹配 <前缀>.<标签>.vtt / .srt
                          <标签> 末尾的 .default 会被去掉，并作为默认字幕
   --subs-list SPEC       字幕列表，逗号分隔，每项 标签:字幕文件路径
                          与 --subs-prefix 二选一；标签末尾的 .default 会被去掉
+                         .srt 会先转成 WebVTT 再打包
   --pgs-list SPEC        PGS 位图字幕（.sup）列表，逗号分隔，每项 名称:语言码:源
                          源写 main#N 取主视频第 N 条字幕流（0 起，须为 hdmv_pgs_subtitle），
                          否则给外挂 .sup 文件路径
                          抽出的 .sup 以 <语言码>.sup 写进每条阶梯的 pgs-subs/，
-                         并生成 pgs-subs/index.json（与 hls.min.js 平级）
+                         并生成 pgs-subs/index.json（与 hls.min.js 平级）；
+                         抽取时加 -copyts 保留源绝对时间轴，offset 因此恒为 0
   --duration SEC         只处理前 SEC 秒（0=全片，默认 0）
   --segment-duration SEC 分片时长，默认 6
   --gop N                手动指定 GOP 帧数，默认按 fps*分片时长 取整
@@ -305,10 +307,38 @@ FC="${FC%;}"
 echo "=== 2/4 音频编码 ==="
 [ -n "$AUDIO" ] || AUDIO="English:en:2:192k:main"
 IFS=',' read -r -a AUDIO_ITEMS <<<"$AUDIO"
-for item in "${AUDIO_ITEMS[@]}"; do
+
+# 音轨显示名决定输出目录名（slug）。主视频内嵌轨的 title 与外挂文件重名时
+# （例如内嵌轨叫 English，外挂 Movie.English.mp3 解析出来也叫 English）会算出
+# 同一个 slug，既会互相覆盖 mezz 文件，又会让 packager 报
+# "Seeing duplicated outputs 'a_English/init.mp4'" 直接中止。
+# 这里先统一去重：重复项追加 -2 / -3 …，显示名同步补 #2 / #3，
+# 避免播放器里出现两条同名音轨。
+audio_slug() { printf '%s' "${1:-audio}" | tr -c 'A-Za-z0-9_-' '_'; }
+AUDIO_SLUGS=()
+AUDIO_NAMES=()
+for ai in "${!AUDIO_ITEMS[@]}"; do
+  IFS=':' read -r _aname _ _ _ _ <<<"${AUDIO_ITEMS[$ai]}"
+  _aname="${_aname:-audio}"
+  _slug="$(audio_slug "$_aname")"; [ -n "$_slug" ] || _slug="audio"
+  _name="$_aname"; _dup=2
+  while :; do
+    _hit=0
+    for ((_j = 0; _j < ${#AUDIO_SLUGS[@]}; _j++)); do
+      if [ "${AUDIO_SLUGS[$_j]}" = "$_slug" ]; then _hit=1; break; fi
+    done
+    if [ "$_hit" = 0 ]; then break; fi
+    _slug="$(audio_slug "$_aname")-$_dup"; _name="$_aname #$_dup"; _dup=$((_dup + 1))
+  done
+  AUDIO_SLUGS+=("$_slug")
+  AUDIO_NAMES+=("$_name")
+done
+
+for ai in "${!AUDIO_ITEMS[@]}"; do
+  item="${AUDIO_ITEMS[$ai]}"
   IFS=':' read -r aname alang ach abr asrc <<<"$item"
   [ -n "${aname:-}" ] && [ -n "${asrc:-}" ] || die "音轨格式错误: $item"
-  slug="$(printf '%s' "$aname" | tr -c 'A-Za-z0-9_-' '_')"
+  slug="${AUDIO_SLUGS[$ai]}"
   ch_args=(-ac "$ach")
   [ "$ach" = "6" ] && ch_args=(-ac 6 -channel_layout 5.1)
   echo "  - $aname ($alang, ${ach}ch, $abr, 源=$asrc)"
@@ -324,6 +354,44 @@ done
 
 # ---------- 3. 字幕 ----------
 echo "=== 3/4 字幕准备 ==="
+# 源字幕 -> mezz 里的 WebVTT：.srt 先用 ffmpeg 转 WebVTT，再按 limit 裁剪/规范化
+# $1=源字幕  $2=目标 .vtt  $3=限制秒数（0=不裁）
+prepare_sub() {
+  local src="$1" dst="$2" limit="$3"
+  case "$src" in
+    *.srt|*.SRT)
+      local tmp="${dst%.vtt}.srt.vtt"
+      "$FFMPEG" -y -hide_banner -loglevel error -nostats -i "$src" -c:s webvtt "$tmp" \
+        || die "SRT 转 WebVTT 失败: $src"
+      python3 "$SCRIPT_DIR/trim_vtt.py" "$tmp" "$dst" "$limit"
+      rm -f "$tmp"
+      ;;
+    *)
+      python3 "$SCRIPT_DIR/trim_vtt.py" "$src" "$dst" "$limit"
+      ;;
+  esac
+}
+# 字幕显示名 -> slug：去掉括号、空格转下划线
+sub_slug() { sed 's/[()]//g; s/ /_/g' <<<"$1"; }
+# 两条字幕显示名重复时（UI 里给多条字幕挑/填了同一个显示名，如都叫 Chinese）
+# 会算出同一个 slug，既互相覆盖 mezz 文件，又让 packager 报
+# "Seeing duplicated segment templates 's_Chinese/\$Number\$.vtt'" 中止。
+# 这里对重复项追加 -2 / -3 …。显示名保持用户输入不改动，
+# 因为字幕语言码是拿显示名反查 lang_of() 得到的，改名会让该轨丢掉 lang=。
+unique_sub_slug() {  # $1=显示名，输出本批内唯一的 slug
+  local base cand n hit j
+  base="$(sub_slug "$1")"; [ -n "$base" ] || base="sub"
+  cand="$base"; n=2
+  while :; do
+    hit=0
+    for ((j = 0; j < ${#SUBS[@]}; j++)); do
+      if [ "${SUBS[$j]%%|*}" = "$cand" ]; then hit=1; break; fi
+    done
+    if [ "$hit" = 0 ]; then break; fi
+    cand="$base-$n"; n=$((n + 1))
+  done
+  printf '%s' "$cand"
+}
 SUBS=()
 SUBS_N=0
 if [ -n "$SUBS_LIST" ]; then
@@ -335,8 +403,8 @@ if [ -n "$SUBS_LIST" ]; then
     [ "$label" != "$sfile" ] || die "字幕条目格式错误（应为 标签:文件）: $entry"
     [ -f "$sfile" ] || die "字幕文件不存在: $sfile"
     label="${label%.default}"
-    slug="$(sed 's/[()]//g; s/ /_/g' <<<"$label")"
-    python3 "$SCRIPT_DIR/trim_vtt.py" "$sfile" "$MEZZ/sub/$slug.vtt" "$DUR"
+    slug="$(unique_sub_slug "$label")"
+    prepare_sub "$sfile" "$MEZZ/sub/$slug.vtt" "$DUR"
     SUBS+=("$slug|$label")
     SUBS_N=$((SUBS_N + 1))
   done
@@ -345,17 +413,18 @@ if [ -n "$SUBS_LIST" ]; then
 elif [ -n "$SUBS_PREFIX" ]; then
   shopt -s nullglob
   pbase="$(basename "$SUBS_PREFIX")"
-  for f in "$SUBS_PREFIX".*.vtt; do
-    base="$(basename "$f" .vtt)"
+  for f in "$SUBS_PREFIX".*.vtt "$SUBS_PREFIX".*.srt; do
+    base="$(basename "$f")"
+    base="${base%.*}"
     label="${base:$(( ${#pbase} + 1 ))}"
     label="${label%.default}"
-    slug="$(sed 's/[()]//g; s/ /_/g' <<<"$label")"
-    python3 "$SCRIPT_DIR/trim_vtt.py" "$f" "$MEZZ/sub/$slug.vtt" "$DUR"
+    slug="$(unique_sub_slug "$label")"
+    prepare_sub "$f" "$MEZZ/sub/$slug.vtt" "$DUR"
     SUBS+=("$slug|$label")
     SUBS_N=$((SUBS_N + 1))
   done
   shopt -u nullglob
-  [ "$SUBS_N" -gt 0 ] || die "没有匹配到字幕: $SUBS_PREFIX.*.vtt"
+  [ "$SUBS_N" -gt 0 ] || die "没有匹配到字幕: $SUBS_PREFIX.*.vtt(.srt)"
   echo "  共 $SUBS_N 条字幕"
 else
   echo "  未指定 --subs-prefix / --subs-list，跳过字幕"
@@ -441,7 +510,12 @@ lang_of() {
 
 # ---------- PGS 位图字幕（.sup） ----------
 # 先抽到 mezz/pgs/，打包后再写进每条阶梯的 pgs-subs/（与 hls.min.js 平级）
-# PGS_ROWS 每行: 语言码|名称|文件名|mezz序号；用换行分隔的字符串而非数组：bash 3.2 + set -u 展开空数组会报错
+# PGS_ROWS 每行: 语言码|名称|文件名|mezz序号|偏移秒；用换行分隔的字符串而非数组：bash 3.2 + set -u 展开空数组会报错
+# 读取某字幕流首包 PTS（秒）；无流/无包时回显空
+first_pts() {  # $1=输入文件  $2=ffprobe 流选择器（如 s:0）
+  "$FFPROBE" -v error -select_streams "$2" -show_entries packet=pts_time \
+    -of csv=p=0 -read_intervals "%+#1" "$1" 2>/dev/null | head -n1
+}
 PGS_ROWS=""
 PGS_FILES=""
 PGS_N=0
@@ -460,21 +534,28 @@ if [ -n "$PGS_LIST" ]; then
     psrc="${pre#*:}"
     [ "$pre" != "$psrc" ] || die "PGS 条目格式错误（应为 名称:语言码:源）: $entry"
     pout="$MEZZ/pgs/$pgs_i.sup"
+    src_first=""
     case "$psrc" in
       main#*)
         pord="${psrc#main#}"
         case "$pord" in ''|*[!0-9]*) die "PGS 内嵌轨序号非法: $entry";; esac
+        src_first="$(first_pts "$INPUT" "s:$pord")"
         # shellcheck disable=SC2086
-        "$FFMPEG" -y -hide_banner -loglevel error -nostats $PGS_TRIM -i "$INPUT" \
+        "$FFMPEG" -y -hide_banner -loglevel error -nostats -copyts $PGS_TRIM -i "$INPUT" \
           -map "0:s:$pord" -c:s copy -f sup "$pout" || die "抽取内嵌 PGS 失败: $entry"
         ;;
       *)
         [ -f "$psrc" ] || die "PGS 文件不存在: $psrc"
+        src_first="$(first_pts "$psrc" s:0)"
         # shellcheck disable=SC2086
-        "$FFMPEG" -y -hide_banner -loglevel error -nostats $PGS_TRIM -f sup -i "$psrc" \
+        "$FFMPEG" -y -hide_banner -loglevel error -nostats -copyts $PGS_TRIM -f sup -i "$psrc" \
           -c:s copy -f sup "$pout" || die "抽取 PGS 失败: $psrc"
         ;;
     esac
+    # -copyts 关闭 ffmpeg 默认的「输出时间戳归零」，产出 .sup 保留源绝对时间轴。
+    # offset（= 源首 PTS - 产出首 PTS）因此为 0，作为「播放端是否需要补偿」的显式契约。
+    out_first="$(first_pts "$pout" s:0)"
+    poff="$(awk -v s="${src_first:-0}" -v o="${out_first:-0}" 'BEGIN{printf "%.3f", s-o}')"
     # 文件名用语言码；语言码缺失时退回 und；重名追加 -2 / -3 ...
     plang="${plang:-und}"
     pbase="$(printf '%s' "$plang" | tr -c 'A-Za-z0-9._-' '_')"
@@ -484,7 +565,7 @@ if [ -n "$PGS_LIST" ]; then
       pfile="$pbase-$pn.sup"; pn=$((pn + 1))
     done
     PGS_FILES="${PGS_FILES}${pfile}"$'\n'
-    PGS_ROWS="${PGS_ROWS}${plang}|${pname}|${pfile}|${pgs_i}"$'\n'
+    PGS_ROWS="${PGS_ROWS}${plang}|${pname}|${pfile}|${pgs_i}|${poff}"$'\n'
     PGS_N=$((PGS_N + 1))
     pgs_i=$((pgs_i + 1))
   done
@@ -499,7 +580,7 @@ pack_into() {  # $1=codec(hevc|h264)  $2=输出目录  其余=视频档位规格
   local codec="$1" dir="$2"
   shift 2
   local items=("$@")
-  local DESC item vname aname alang slug desc label lang entry
+  local DESC item vname aname alang slug desc label lang entry ai
   mkdir -p "$dir"
   cd "$dir"
   rm -rf master.m3u8 v_* a_* s_*
@@ -510,9 +591,11 @@ pack_into() {  # $1=codec(hevc|h264)  $2=输出目录  其余=视频档位规格
     DESC+=("in=../mezz/v_${codec}_$vname.mp4,stream=video,init_segment=$vname/init.mp4,segment_template=$vname/\$Number\$.m4s,playlist_name=$vname/playlist.m3u8")
   done
 
-  for item in "${AUDIO_ITEMS[@]}"; do
+  for ai in "${!AUDIO_ITEMS[@]}"; do
+    item="${AUDIO_ITEMS[$ai]}"
     IFS=':' read -r aname alang _ _ _ <<<"$item"
-    slug="$(printf '%s' "$aname" | tr -c 'A-Za-z0-9_-' '_')"
+    slug="${AUDIO_SLUGS[$ai]}"
+    aname="${AUDIO_NAMES[$ai]}"
     desc="in=../mezz/a_$slug.mp4,stream=audio,init_segment=a_$slug/init.mp4,segment_template=a_$slug/\$Number\$.m4s,playlist_name=a_$slug/playlist.m3u8,hls_group_id=audio,hls_name=$aname"
     # packager 会直接拒绝 lang=und；语言未知时不带 lang=（该轨也就无法成为默认轨）
     if [ -n "$alang" ] && [ "$alang" != "und" ]; then desc="$desc,lang=$alang"; fi
@@ -543,18 +626,19 @@ if [ "$H264_N" -gt 0 ]; then pack_into h264 "$HLS_H264" "${H264_ITEMS[@]}"; fi
 # ---------- PGS 字幕落盘 ----------
 # 每条阶梯目录下建 pgs-subs/（与 hls.min.js 平级）：<语言码>.sup + index.json
 write_pgs_subs() {  # $1=HLS 输出目录
-  local dir="$1" json="[" first=1 lang name file idx
+  local dir="$1" json="[" first=1 lang name file idx off
   [ "$PGS_N" -gt 0 ] || return 0
   mkdir -p "$dir/pgs-subs"
-  while IFS='|' read -r lang name file idx; do
+  while IFS='|' read -r lang name file idx off; do
     [ -n "$file" ] || continue
     cp "$MEZZ/pgs/$idx.sup" "$dir/pgs-subs/$file"
     # JSON 里不能出现裸引号 / 反斜杠
     name="${name//\\/}"
     name="${name//\"/}"
+    [ -n "$off" ] || off=0
     if [ "$first" = "1" ]; then first=0; else json="$json,"; fi
     json="$json
-  { \"lang\": \"$lang\", \"name\": \"$name\", \"file\": \"$file\" }"
+  { \"lang\": \"$lang\", \"name\": \"$name\", \"file\": \"$file\", \"offset\": $off }"
   done <<<"$PGS_ROWS"
   printf '%s\n]\n' "$json" > "$dir/pgs-subs/index.json"
 }
@@ -580,16 +664,15 @@ fi
 verify_ladder() {  # $1=codec  $2=hls目录  其余=视频档位规格
   local codec="$1" dir="$2"
   shift 2
-  local items=("$@") item vname slug
+  local items=("$@") item vname slug ai
   echo
   echo "=== [$codec] 分段核对 ==="
   for item in "${items[@]}"; do
     IFS=':' read -r vname _ _ _ _ <<<"$item"
     printf "  v_%-6s %s 段\n" "$vname" "$(ls "$dir/$vname"/*.m4s 2>/dev/null | wc -l | tr -d ' ')"
   done
-  for item in "${AUDIO_ITEMS[@]}"; do
-    IFS=':' read -r vname _ _ _ _ <<<"$item"
-    slug="$(printf '%s' "$vname" | tr -c 'A-Za-z0-9_-' '_')"
+  for ai in "${!AUDIO_ITEMS[@]}"; do
+    slug="${AUDIO_SLUGS[$ai]}"
     printf "  a_%-6s %s 段\n" "$slug" "$(ls "$dir/a_$slug"/*.m4s 2>/dev/null | wc -l | tr -d ' ')"
   done
   if [ "$SUBS_N" -gt 0 ]; then echo "  字幕轨 $SUBS_N 条"; fi
