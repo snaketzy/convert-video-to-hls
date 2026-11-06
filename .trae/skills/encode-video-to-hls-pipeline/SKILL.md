@@ -129,6 +129,8 @@ V="$D/Some.Movie.2011.mp4"; P="$D/Some.Movie.2011"
 
 6. 音轨/字幕的显示名都会转成 `slug` 决定输出目录名：音轨是非 `A-Za-z0-9_-` 一律换 `_`，字幕是去括号、空格转下划线；字幕的语言码再拿显示名反查 `lang_of()`，查不到就不带 `lang=`（track 仍保留）。**显示名重复时（音轨如主轨 title 与外挂文件都叫 `English`；字幕如在 UI 里给多条字幕选了同一个显示名 `Chinese`）脚本会自动给重复项追加 `-2` / `-3`**；否则会互相覆盖 mezz 文件并让 packager 报 `Seeing duplicated outputs 'a_English/init.mp4'` 或 `Seeing duplicated segment templates 's_Chinese/$Number$.vtt'` 中止。音轨重复时显示名同步补 `#2` / `#3` 便于区分；字幕显示名保持原样不改动（改名会让 `lang_of()` 反查语言码失效）。
 
+6.1 **0 cue 的空字幕会被自动跳过**：ASS/SSA 转出的 `.vtt` 若只有 `WEBVTT` 头、没有任何 `-->` cue（常见于「中上英下」「英上中下」这类未烧进正片的空白轨），交给 packager 会被判为空流并以 `Packaging Error: 6 (END_OF_STREAM)` 中止**整批**打包。脚本对裁剪后的 mezz VTT 统计 `-->` 条数，命中 0 就告警 `⚠ 跳过空字幕「<标签>」`、删掉中间文件并 `continue`。因此 `SUBS_N` 可能小于源字幕个数；只要源里解析出过字幕（`SUB_SEEN > 0`）就不报错。
+
 7. **PGS 位图字幕用 `-f sup -c:s copy` 无损抽取**：内嵌轨走 `-map 0:s:<N>`，外挂 `.sup` 走 `-f sup -i`；与 WebVTT 不同，`-t` 对 sup 是容器级裁剪、`-ss` 直接生效，无需额外过滤。输出文件名以语言码命名（同名时追加 `-2`、`-3` 去重），落盘到 `pgs-subs/` 并同步生成 `index.json`。
 
 8. **抽取 PGS 必须加 `-copyts` 保留原始时间轴**：ffmpeg 默认会减掉输入的 `start_time` 把输出 PTS 归零——外挂 `.sup` 原本从第 87.88 秒起（`PG` 段头第 2–5 字节大端 PTS = 7909200），不加 `-copyts` 时经 `-f sup -c:s copy` 抽出后首包 PTS 会变成 0，原始偏移被抹掉，播放端会从第 0 秒就弹出字幕。脚本在两条抽取命令（内嵌 `main#N` 与外挂 `.sup`）上都加了 `-copyts`（输入选项，置于 `-i` 前），产出 `.sup` 保留源绝对时间轴（外挂仍是 87.88）。`index.json` 的 `offset` 按「源首 PTS − 产出首 PTS」计算，在此前提下恒为 `0`，作为播放端「无需补偿」的显式契约。

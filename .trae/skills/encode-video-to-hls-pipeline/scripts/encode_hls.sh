@@ -392,8 +392,13 @@ unique_sub_slug() {  # $1=显示名，输出本批内唯一的 slug
   done
   printf '%s' "$cand"
 }
+# 统计字幕 cue 数（VTT/SRT 都用 '-->' 分隔）
+# 0 cue 的空字幕（如 ASS 转 VTT 失败只剩个 WEBVTT 头、或裁剪后没有 cue）
+# 交给 packager 会直接报 "Packaging Error: 6 (END_OF_STREAM)" 让整批失败
+vtt_cues() { local n; n="$(grep -c -- '-->' "$1" 2>/dev/null || true)"; printf '%s' "${n:-0}"; }
 SUBS=()
 SUBS_N=0
+SUB_SEEN=0
 if [ -n "$SUBS_LIST" ]; then
   IFS=',' read -r -a SUB_ITEMS <<<"$SUBS_LIST"
   for entry in "${SUB_ITEMS[@]}"; do
@@ -402,13 +407,19 @@ if [ -n "$SUBS_LIST" ]; then
     sfile="${entry#*:}"
     [ "$label" != "$sfile" ] || die "字幕条目格式错误（应为 标签:文件）: $entry"
     [ -f "$sfile" ] || die "字幕文件不存在: $sfile"
+    SUB_SEEN=$((SUB_SEEN + 1))
     label="${label%.default}"
     slug="$(unique_sub_slug "$label")"
     prepare_sub "$sfile" "$MEZZ/sub/$slug.vtt" "$DUR"
+    if [ "$(vtt_cues "$MEZZ/sub/$slug.vtt")" -eq 0 ]; then
+      echo "  ⚠ 跳过空字幕「${label}」：0 条 cue，打包会让 packager 报 END_OF_STREAM（源: ${sfile}）"
+      rm -f "$MEZZ/sub/$slug.vtt"
+      continue
+    fi
     SUBS+=("$slug|$label")
     SUBS_N=$((SUBS_N + 1))
   done
-  [ "$SUBS_N" -gt 0 ] || die "--subs-list 未解析出任何字幕"
+  [ "$SUB_SEEN" -gt 0 ] || die "--subs-list 未解析出任何字幕"
   echo "  共 $SUBS_N 条字幕（--subs-list）"
 elif [ -n "$SUBS_PREFIX" ]; then
   shopt -s nullglob
@@ -418,13 +429,19 @@ elif [ -n "$SUBS_PREFIX" ]; then
     base="${base%.*}"
     label="${base:$(( ${#pbase} + 1 ))}"
     label="${label%.default}"
+    SUB_SEEN=$((SUB_SEEN + 1))
     slug="$(unique_sub_slug "$label")"
     prepare_sub "$f" "$MEZZ/sub/$slug.vtt" "$DUR"
+    if [ "$(vtt_cues "$MEZZ/sub/$slug.vtt")" -eq 0 ]; then
+      echo "  ⚠ 跳过空字幕「${label}」：0 条 cue，打包会让 packager 报 END_OF_STREAM（源: ${f}）"
+      rm -f "$MEZZ/sub/$slug.vtt"
+      continue
+    fi
     SUBS+=("$slug|$label")
     SUBS_N=$((SUBS_N + 1))
   done
   shopt -u nullglob
-  [ "$SUBS_N" -gt 0 ] || die "没有匹配到字幕: $SUBS_PREFIX.*.vtt(.srt)"
+  [ "$SUB_SEEN" -gt 0 ] || die "没有匹配到字幕: $SUBS_PREFIX.*.vtt(.srt)"
   echo "  共 $SUBS_N 条字幕"
 else
   echo "  未指定 --subs-prefix / --subs-list，跳过字幕"
