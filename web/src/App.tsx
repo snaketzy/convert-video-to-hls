@@ -1,8 +1,9 @@
 import { useEffect } from 'react';
-import { Film, Loader2, TriangleAlert } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, Film, Loader2, TriangleAlert } from 'lucide-react';
 
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { BatchProgressCard } from '@/components/BatchProgressCard';
 import { DirReviewCard } from '@/components/DirReviewCard';
 import { OutputCard } from '@/components/OutputCard';
@@ -42,6 +43,31 @@ function BinaryStatus() {
       <Badge variant="secondary" title={health.binaries.packager.path ?? undefined}>
         Shaka Packager {health.binaries.packager.version}
       </Badge>
+    </div>
+  );
+}
+
+function ScrollPins() {
+  const toTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+  const toBottom = () =>
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+
+  return (
+    <div className="pointer-events-none fixed inset-y-0 left-1/2 z-20 w-full max-w-6xl -translate-x-1/2">
+      <div className="pointer-events-auto absolute left-full top-1/2 ml-4 flex -translate-y-1/2 flex-col gap-2">
+        <Button variant="outline" size="icon" title="跳转顶部" aria-label="跳转顶部" onClick={toTop}>
+          <ChevronsUp />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          title="跳转底部"
+          aria-label="跳转底部"
+          onClick={toBottom}
+        >
+          <ChevronsDown />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -117,6 +143,8 @@ export default function App() {
 
         {batch && <BatchProgressCard batch={batch} />}
       </main>
+
+      <ScrollPins />
     </div>
   );
 }
