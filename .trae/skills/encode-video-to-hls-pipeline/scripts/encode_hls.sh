@@ -38,6 +38,7 @@ SEG=6
 GOP=""
 KEEP_MEZZ=0
 COPY_PLAYER=1
+MAKE_THUMBS=1
 PROGRESS=0
 DEFAULT_AUDIO_LANG="en"
 DEFAULT_TEXT_LANG="en"
@@ -79,6 +80,7 @@ usage() {
   --default-text-lang L  默认字幕语言，默认 en
   --progress             额外向 stdout 输出 ffmpeg 进度（供调用方解析），默认关闭
   --keep-mezz            打包后保留 mezz 中间文件（默认删除）
+  --no-thumbs            不生成进度条悬停预览缩略图
   --no-player            不复制附带播放器到 HLS 目录
   -h, --help             显示本帮助
 EOF
@@ -103,6 +105,7 @@ while [ $# -gt 0 ]; do
     --default-text-lang) DEFAULT_TEXT_LANG="$2"; shift 2;;
     --progress) PROGRESS=1; shift;;
     --keep-mezz) KEEP_MEZZ=1; shift;;
+    --no-thumbs) MAKE_THUMBS=0; shift;;
     --no-player) COPY_PLAYER=0; shift;;
     -h|--help) usage; exit 0;;
     *) die "未知参数: $1";;
@@ -709,6 +712,36 @@ verify_ladder() {  # $1=codec  $2=hls目录  其余=视频档位规格
 if [ "$HEVC_N" -gt 0 ]; then verify_ladder hevc "$HLS_HEVC" "${HEVC_ITEMS[@]}"; fi
 if [ "$H264_N" -gt 0 ]; then verify_ladder h264 "$HLS_H264" "${H264_ITEMS[@]}"; fi
 
+# ---------- 进度条悬停预览缩略图 ----------
+# 纯旁挂资源（thumbnails/），不碰任何清单与轨道：生成一次，两条阶梯各拷一份，
+# 让它与各自的 master.m3u8 同级，播放器按相对路径即可取到。
+# 从 $INPUT 取源而非 mezz，因此放在 mezz 清理之前或之后都成立。
+THUMBS_MADE=0
+if [ "$MAKE_THUMBS" = "1" ] && [ -f "$SCRIPT_DIR/make_thumbnails.sh" ]; then
+  # 先落到第一条已有阶梯，再拷给另一条；不额外造临时目录，失败也不会留残留
+  THUMB_FIRST="${HLS_HEVC:-$HLS_H264}"
+  THUMB_ARGS=""
+  [ "$DURATION" = "0" ] || THUMB_ARGS="--limit $DURATION"
+  # HDR 源不加色调映射会得到发灰的预览图（与视频档位的 HDR2SDR 保持一致）
+  case "${COLOR_TRC:-}" in
+    smpte2084 | arib-std-b67) THUMB_ARGS="$THUMB_ARGS --tonemap";;
+  esac
+  # shellcheck disable=SC2086
+  if bash "$SCRIPT_DIR/make_thumbnails.sh" --input "$INPUT" --out "$THUMB_FIRST" $THUMB_ARGS; then
+    for dir in "$HLS_HEVC" "$HLS_H264"; do
+      [ -n "$dir" ] || continue
+      if [ "$dir" != "$THUMB_FIRST" ]; then
+        rm -rf "$dir/thumbnails"
+        cp -R "$THUMB_FIRST/thumbnails" "$dir/thumbnails"
+      fi
+    done
+    THUMBS_MADE=1
+  else
+    # 缩略图只是锦上添花，失败不该把已成功的编码整单拖死
+    echo "警告: 悬停预览缩略图生成失败，已跳过（不影响播放）" >&2
+  fi
+fi
+
 if [ "$KEEP_MEZZ" = "0" ]; then
   rm -rf "$MEZZ"
   echo
@@ -722,4 +755,8 @@ if [ -n "$HLS_H264" ]; then echo "  h264: $HLS_H264/master.m3u8"; fi
 if [ "$PGS_N" -gt 0 ]; then
   if [ -n "$HLS_HEVC" ]; then echo "  hevc pgs: $HLS_HEVC/pgs-subs/index.json"; fi
   if [ -n "$HLS_H264" ]; then echo "  h264 pgs: $HLS_H264/pgs-subs/index.json"; fi
+fi
+if [ "$THUMBS_MADE" = "1" ]; then
+  if [ -n "$HLS_HEVC" ]; then echo "  hevc thumbs: $HLS_HEVC/thumbnails/index.json"; fi
+  if [ -n "$HLS_H264" ]; then echo "  h264 thumbs: $HLS_H264/thumbnails/index.json"; fi
 fi
