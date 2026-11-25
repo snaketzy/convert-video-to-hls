@@ -15,6 +15,7 @@ import {
   pickerErrorCleared,
   pickOutputRoot,
   startBatch,
+  thumbsToggled,
 } from '@/store/batchSlice';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
 
@@ -51,6 +52,7 @@ export function OutputCard() {
     config,
     codecs,
     encodeLimitSec,
+    makeThumbs,
   } = useAppSelector((state) => state.batch);
 
   const pickerSupported = config?.folderPickerSupported !== false && pickerStatus !== 'unsupported';
@@ -176,6 +178,18 @@ export function OutputCard() {
                 {option.label}
               </Button>
             ))}
+          </div>
+
+          <div className="border-input flex items-center gap-2 rounded-lg border px-3 py-2">
+            <span className="text-muted-foreground text-xs">缩略图</span>
+            <Label className="cursor-pointer gap-2 font-normal">
+              <Checkbox
+                checked={makeThumbs}
+                disabled={batchActive || starting}
+                onCheckedChange={(checked) => dispatch(thumbsToggled(checked === true))}
+              />
+              生成悬停预览
+            </Label>
           </div>
 
           {encodable.length === 0 && (

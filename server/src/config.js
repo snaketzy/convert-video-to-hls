@@ -43,3 +43,15 @@ export const LOG_TAIL_LINES = 60;
 
 /** 任务记录保留时长，默认 12 小时 */
 export const BATCH_TTL_MS = Number(process.env.BATCH_TTL_MS || 12 * 60 * 60 * 1000);
+
+/** TMDB API key（v3 key 或 v4 Read Access Token）；未配置时跳过预告片下载 */
+export const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
+
+/**
+ * yt-dlp 反爬：从本机浏览器复用登录态（chrome / safari / edge / firefox / brave …）
+ * 用于缓解「Sign in to confirm you're not a bot」；留空则不启用
+ */
+export const YTDLP_COOKIES_FROM_BROWSER = process.env.YTDLP_COOKIES_FROM_BROWSER || '';
+
+/** yt-dlp 的 cookies.txt 路径（与浏览器读取二选一，此项优先） */
+export const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || '';

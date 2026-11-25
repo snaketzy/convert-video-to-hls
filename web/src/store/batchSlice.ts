@@ -1,7 +1,14 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 import { api } from '@/lib/api';
-import type { AppConfig, Batch, CodecSelection, HealthPayload, ScanItem, SubmitTask } from '@/lib/types';
+import type {
+  AppConfig,
+  Batch,
+  CodecSelection,
+  HealthPayload,
+  ScanItem,
+  SubmitTask,
+} from '@/lib/types';
 import type { RootState } from '@/store';
 
 export interface BatchSliceState {
@@ -28,6 +35,9 @@ export interface BatchSliceState {
   /** 只编码前 N 秒（0=全片），用于出样片快速验证 */
   encodeLimitSec: number;
 
+  /** 是否生成进度条悬停预览缩略图 */
+  makeThumbs: boolean;
+
   batch: Batch | null;
   startStatus: 'idle' | 'starting' | 'error';
   startError: string | null;
@@ -53,6 +63,7 @@ const initialState: BatchSliceState = {
 
   codecs: { hevc: true, h264: true },
   encodeLimitSec: 0,
+  makeThumbs: true,
 
   batch: null,
   startStatus: 'idle',
@@ -195,7 +206,7 @@ export const startBatch = createAsyncThunk<Batch, void, { state: RootState; reje
     }
 
     try {
-      return await api.createBatch(outputRoot, tasks, state.codecs, state.encodeLimitSec);
+      return await api.createBatch(outputRoot, tasks, state.codecs, state.encodeLimitSec, state.makeThumbs);
     } catch (error) {
       return rejectWithValue(error instanceof Error ? error.message : '创建批次失败');
     }
@@ -267,6 +278,9 @@ const batchSlice = createSlice({
     },
     encodeLimitChanged(state, action: PayloadAction<number>) {
       state.encodeLimitSec = action.payload;
+    },
+    thumbsToggled(state, action: PayloadAction<boolean>) {
+      state.makeThumbs = action.payload;
     },
     audioLabelChanged(
       state,
@@ -482,6 +496,7 @@ export const {
   pickerErrorCleared,
   codecToggled,
   encodeLimitChanged,
+  thumbsToggled,
   audioLabelChanged,
   audioLangChanged,
   audioChannelsChanged,

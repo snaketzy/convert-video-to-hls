@@ -62,8 +62,20 @@ export const api = {
   scan: (dirs: string[], mainVideos?: Record<string, string>) =>
     post<{ items: ScanItem[] }>('/scan', { dirs, mainVideos }),
 
-  createBatch: (outputRoot: string, tasks: SubmitTask[], codecs: CodecSelection, limitSec: number) =>
-    post<Batch>('/batches', { outputRoot, tasks, codecs, limitSec }),
+  createBatch: (
+    outputRoot: string,
+    tasks: SubmitTask[],
+    codecs: CodecSelection,
+    limitSec: number,
+    makeThumbs: boolean
+  ) =>
+    post<Batch>('/batches', {
+      outputRoot,
+      tasks,
+      codecs,
+      limitSec,
+      makeThumbs,
+    }),
 
   getBatch: (batchId: string) => request<Batch>(`/batches/${batchId}`),
 

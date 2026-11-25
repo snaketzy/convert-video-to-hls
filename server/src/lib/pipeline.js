@@ -6,6 +6,7 @@ import { ENCODE_SCRIPT, SEGMENT_DURATION } from '../config.js';
 import { describeBinaries } from './binaries.js';
 import { moveHlsWithFinder, removeStagingDir, stagingDirFor } from './export.js';
 import { pushLog, refreshBatchStatus } from './jobs.js';
+import { fetchTrailerForTask } from './trailer.js';
 
 /** 4 个阶段在总进度里的基础权重，缺失的阶段会被剔除后重新归一化 */
 const BASE_WEIGHTS = { video: 55, audio: 20, subs: 5, pack: 20 };
@@ -135,6 +136,7 @@ async function runTask(batch, task) {
   ];
 
   if (limitSec > 0) args.push('--duration', String(limitSec));
+  if (batch.makeThumbs === false) args.push('--no-thumbs');
 
   // 只产出勾选的阶梯：把另一条置空，脚本会跳过它
   if (batch.codecs?.hevc === false) args.push('--ladder-hevc', '');
@@ -278,6 +280,7 @@ async function runTask(batch, task) {
       task.sizeBytes = task.playlists.reduce((sum, entry) => sum + entry.sizeBytes, 0);
       task.percent = 100;
       task.itemLabel = null;
+      await runTrailer(batch, task, false);
       return;
     }
 
@@ -303,7 +306,29 @@ async function runTask(batch, task) {
     task.sizeBytes = task.playlists.reduce((sum, entry) => sum + entry.sizeBytes, 0);
     task.percent = 100;
     task.itemLabel = null;
+    await runTrailer(batch, task, true);
   });
+}
+
+/** 编码完成后顺带拉预告片：失败只记日志，不影响已经完成的编码产物 */
+async function runTrailer(batch, task, staged) {
+  if (batch.status === 'cancelled') return;
+
+  const controller = new AbortController();
+  batch.trailerAbort = controller;
+  task.itemLabel = '预告片';
+  try {
+    await fetchTrailerForTask(task, {
+      staged,
+      signal: controller.signal,
+      log: (line) => pushLog(task, line),
+    });
+  } catch (error) {
+    pushLog(task, `预告片下载失败：${error.message}`);
+  } finally {
+    batch.trailerAbort = null;
+    task.itemLabel = null;
+  }
 }
 
 /** 为每条播放列表附上所在目录的体积 */
@@ -395,6 +420,8 @@ export async function runBatch(batch) {
 export function cancelBatch(batch) {
   batch.status = 'cancelled';
   batch.cancelledAt = Date.now();
+  // 编码已结束、正在下载预告片时也要能中断
+  batch.trailerAbort?.abort();
 
   const child = batch.currentChild;
   if (child?.pid) {

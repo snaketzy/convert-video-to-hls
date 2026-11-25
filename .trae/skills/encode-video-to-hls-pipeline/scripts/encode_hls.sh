@@ -715,19 +715,30 @@ if [ "$H264_N" -gt 0 ]; then verify_ladder h264 "$HLS_H264" "${H264_ITEMS[@]}"; 
 # ---------- 进度条悬停预览缩略图 ----------
 # 纯旁挂资源（thumbnails/），不碰任何清单与轨道：生成一次，两条阶梯各拷一份，
 # 让它与各自的 master.m3u8 同级，播放器按相对路径即可取到。
-# 从 $INPUT 取源而非 mezz，因此放在 mezz 清理之前或之后都成立。
+# 取 1080 中间件出图而非 4K 原始源：中间件已缩放、已做过 HDR->SDR 色调映射，
+# 出图快约 70 倍（60s 样片实测 24.5s -> 0.3s），画面（含补边）与源一致。
+# 依赖 mezz 存在，故必须放在 mezz 清理之前。
 THUMBS_MADE=0
 if [ "$MAKE_THUMBS" = "1" ] && [ -f "$SCRIPT_DIR/make_thumbnails.sh" ]; then
   # 先落到第一条已有阶梯，再拷给另一条；不额外造临时目录，失败也不会留残留
   THUMB_FIRST="${HLS_HEVC:-$HLS_H264}"
+  # 缩略图源：优先 1080 中间件；源本身 ≤1080 时 1080 档会被裁掉，
+  # 此时退回原始源——源本身也不贵，与旧行为一致。
+  THUMB_INPUT="$INPUT"
   THUMB_ARGS=""
   [ "$DURATION" = "0" ] || THUMB_ARGS="--limit $DURATION"
-  # HDR 源不加色调映射会得到发灰的预览图（与视频档位的 HDR2SDR 保持一致）
-  case "${COLOR_TRC:-}" in
-    smpte2084 | arib-std-b67) THUMB_ARGS="$THUMB_ARGS --tonemap";;
-  esac
+  for cand in "$MEZZ/v_hevc_1080.mp4" "$MEZZ/v_h264_1080.mp4"; do
+    if [ -f "$cand" ]; then THUMB_INPUT="$cand"; break; fi
+  done
+  if [ "$THUMB_INPUT" = "$INPUT" ]; then
+    # 退回原始源时才按源的色彩处理：HDR 源不加色调映射会得到发灰的预览图
+    # （中间件已是 SDR，无需再映射）
+    case "${COLOR_TRC:-}" in
+      smpte2084 | arib-std-b67) THUMB_ARGS="$THUMB_ARGS --tonemap";;
+    esac
+  fi
   # shellcheck disable=SC2086
-  if bash "$SCRIPT_DIR/make_thumbnails.sh" --input "$INPUT" --out "$THUMB_FIRST" $THUMB_ARGS; then
+  if bash "$SCRIPT_DIR/make_thumbnails.sh" --input "$THUMB_INPUT" --out "$THUMB_FIRST" $THUMB_ARGS; then
     for dir in "$HLS_HEVC" "$HLS_H264"; do
       [ -n "$dir" ] || continue
       if [ "$dir" != "$THUMB_FIRST" ]; then

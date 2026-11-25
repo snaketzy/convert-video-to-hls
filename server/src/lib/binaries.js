@@ -16,7 +16,7 @@ const COMMON_DIRS = [
   '/opt/local/bin',
 ];
 
-const BINARIES = ['ffmpeg', 'ffprobe', 'packager'];
+const BINARIES = ['ffmpeg', 'ffprobe', 'packager', 'yt-dlp'];
 
 const cache = new Map();
 
@@ -64,6 +64,10 @@ export function ffprobePath() {
 
 export function packagerPath() {
   return resolveBinary('packager');
+}
+
+export function ytDlpPath() {
+  return resolveBinary('yt-dlp');
 }
 
 function version(binary, args = ['-version']) {

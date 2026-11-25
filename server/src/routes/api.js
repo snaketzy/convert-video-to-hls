@@ -126,6 +126,7 @@ apiRouter.post('/batches', async (req, res, next) => {
     if (!codecs.hevc && !codecs.h264) {
       throw fail(400, '请至少选择一种编码类型（HEVC / H.264）');
     }
+    const makeThumbs = req.body?.makeThumbs !== false;
 
     // 只编码前 N 秒（0=全片），用于快速出样片；非法值一律回退为全片
     const rawLimit = Number(req.body?.limitSec);
@@ -234,7 +235,14 @@ apiRouter.post('/batches', async (req, res, next) => {
       task.outDir = outDirs[index];
     });
 
-    const batch = createBatch({ outputRoot, tasks: prepared, strategy, codecs, limitSec });
+    const batch = createBatch({
+      outputRoot,
+      tasks: prepared,
+      strategy,
+      codecs,
+      limitSec,
+      makeThumbs,
+    });
     runBatch(batch).catch((error) => {
       batch.status = 'failed';
       batch.error = error.message;

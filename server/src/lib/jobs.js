@@ -38,6 +38,7 @@ export function createBatch({
   strategy = { mode: 'direct', notice: null },
   codecs = { hevc: true, h264: true },
   limitSec = 0,
+  makeThumbs = true,
 }) {
   const id = randomUUID();
   const notice = strategy.mode === 'staged' ? strategy.notice : null;
@@ -48,6 +49,7 @@ export function createBatch({
     notice,
     codecs,
     limitSec,
+    makeThumbs,
     status: 'queued',
     error: null,
     createdAt: Date.now(),
@@ -132,6 +134,7 @@ export function serializeBatch(batch) {
     id: batch.id,
     outputRoot: batch.outputRoot,
     notice: batch.notice ?? null,
+    makeThumbs: batch.makeThumbs !== false,
     status: batch.status,
     error: batch.error,
     createdAt: new Date(batch.createdAt).toISOString(),

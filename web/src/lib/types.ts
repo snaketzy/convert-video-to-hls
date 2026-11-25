@@ -149,6 +149,8 @@ export interface Batch {
   outputRoot: string;
   /** 输出根目录不可写时的提示（暂存导出） */
   notice: string | null;
+  /** 是否生成进度条悬停预览缩略图 */
+  makeThumbs?: boolean;
   status: BatchStatus;
   error: string | null;
   createdAt: string;
